@@ -45,6 +45,9 @@ import {
   SourceDisposedError,
 } from '../engine/sources/index.js'
 import type { JsonlSource } from '../engine/sources/index.js'
+import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
+import type { ScanProgress } from '../engine/scanner.js'
+import { offsetToNumber } from '../engine/indexer.js'
 
 // Re-export shared types
 export type {
@@ -63,9 +66,7 @@ export type {
 // Constants
 // ============================================================================
 
-const CHUNK_SIZE = 64 * 1024 // 64 KiB
 const PROGRESS_INTERVAL_ROWS = 1000
-const INDEX_BLOCK_GROWTH_FACTOR = 2
 
 // ============================================================================
 // Source Types
@@ -176,39 +177,26 @@ class UrlSource implements JsonlSource {
 // Indexer
 // ============================================================================
 
-interface IndexerState {
-  lineStarts: Uint32Array
-  lineStartsHi: Uint32Array
-  committedRows: number
-  committedBytes: number
-  totalBytes: number
-  isComplete: boolean
-  hasCRLF: boolean
-}
-
+/**
+ * Worker-side indexer: a thin adapter over the engine's `JsonlScanner`.
+ *
+ * The scanner owns the byte scan, the N+1 bigint offset index, and row
+ * semantics (see `engine/scanner.ts`). This adapter maps scanner state to the
+ * RPC surface: number-based row byte ranges (converted with a safe-integer
+ * check only at this boundary), protocol progress/complete events, and
+ * operation-scoped cancellation via AbortController.
+ */
 class Indexer {
-  private source: JsonlSource
-  private state: IndexerState
-  private buffer: Uint8Array
-  private bufferOffset: number
+  private readonly source: JsonlSource
+  private scanner: JsonlScanner
   private operationId: string | null = null
-  private cancelled = false
+  private abortController: AbortController | null = null
+  private scanAborted = false
   private lastProgressTime = 0
-  private lastProgressRows = 0
 
   constructor(source: JsonlSource) {
     this.source = source
-    this.state = {
-      lineStarts: new Uint32Array(1024),
-      lineStartsHi: new Uint32Array(1024),
-      committedRows: 0,
-      committedBytes: 0,
-      totalBytes: 0,
-      isComplete: false,
-      hasCRLF: false,
-    }
-    this.buffer = new Uint8Array(CHUNK_SIZE)
-    this.bufferOffset = 0
+    this.scanner = new JsonlScanner(source)
   }
 
   setOperationId(operationId: string): void {
@@ -216,99 +204,87 @@ class Indexer {
   }
 
   cancel(): void {
-    this.cancelled = true
+    this.abortController?.abort()
   }
 
-  async index(onProgress?: (event: IndexProgressEvent) => void): Promise<{ totalRows: number; totalBytes: number }> {
-    // NOTE: number-based indexing is temporary; TSK0012 migrates the indexer
-    // to bigint offsets and engine/indexer.ts (OffsetIndex).
-    const size = Number(await this.source.getSize())
-    this.state.totalBytes = size
-
-    this.ensureCapacity(1)
-
-    let offset = 0
-    let bytesRead = 0
-    let rowCount = 0
-
-    while (bytesRead < size && !this.cancelled) {
-      const chunkSize = Math.min(CHUNK_SIZE, size - bytesRead)
-      const chunk = await this.source.readRange(bytesRead, chunkSize)
-
-      if (chunk.length === 0) break
-
-      let chunkOffset = 0
-      while (chunkOffset < chunk.length) {
-        const nlIndex = findNewline(chunk, chunkOffset)
-
-        if (nlIndex === -1) {
-          chunkOffset = chunk.length
-          continue
-        }
-
-        const lineEnd = nlIndex
-        const lineStart = chunkOffset
-
-        const isCRLF = lineEnd > 0 && chunk[lineEnd - 1] === 0x0d
-        if (isCRLF) {
-          this.state.hasCRLF = true
-        }
-
-        const absoluteOffset = bytesRead + lineStart
-        this.addLineStart(absoluteOffset)
-        rowCount++
-
-        chunkOffset = lineEnd + 1
-
-        if (rowCount % PROGRESS_INTERVAL_ROWS === 0) {
-          this.state.committedRows = rowCount
-          this.state.committedBytes = bytesRead + chunkOffset
-
-          if (this.operationId && this.shouldEmitProgress()) {
-            const event: IndexProgressEvent = {
-              ns: 'jsonl-explorer',
-              v: 1,
-              type: 'indexProgress',
-              operationId: this.operationId!,
-              progress: Math.min(100, (bytesRead / size) * 100),
-              rowsProcessed: rowCount,
-              committedRows: rowCount,
-              committedBytes: this.state.committedBytes,
-            }
-            self.postMessage(event)
-          }
-        }
-      }
-
-      bytesRead += chunk.length
+  async index(): Promise<{ totalRows: number; totalBytes: number; invalidUtf8Rows: number }> {
+    // A scanner is single-use: after completion or abort, start a fresh one
+    // so index requests can be retried (e.g. after a user cancel).
+    if (this.scanner.isComplete() || this.scanAborted) {
+      this.scanner = new JsonlScanner(this.source)
+      this.scanAborted = false
     }
-
-    if (bytesRead > 0 && !this.cancelled) {
-      const lastByte = await this.source.readRange(size - 1, 1)
-      if (lastByte[0] !== 0x0a) {
-        this.addLineStart(size)
-        rowCount++
-      }
+    this.abortController = new AbortController()
+    const startedAt = performance.now()
+    let result: Awaited<ReturnType<JsonlScanner['scan']>>
+    try {
+      result = await this.scanner.scan({
+        signal: this.abortController.signal,
+        onProgress: (p) => this.emitIndexProgress(p),
+      })
+    } catch (error) {
+      if (error instanceof IndexAbortedError) this.scanAborted = true
+      throw error
     }
-
-    this.state.committedRows = rowCount
-    this.state.committedBytes = size
-    this.state.isComplete = true
-
     if (this.operationId) {
       const event: IndexCompleteEvent = {
         ns: 'jsonl-explorer',
         v: 1,
         type: 'indexComplete',
         operationId: this.operationId,
-        totalRows: rowCount,
-        totalBytes: size,
-        durationMs: 0,
+        totalRows: result.totalRows,
+        totalBytes: Number(result.totalBytes),
+        durationMs: Math.round(performance.now() - startedAt),
       }
       self.postMessage(event)
     }
+    return {
+      totalRows: result.totalRows,
+      totalBytes: Number(result.totalBytes),
+      invalidUtf8Rows: result.invalidUtf8Rows,
+    }
+  }
 
-    return { totalRows: rowCount, totalBytes: size }
+  /** Byte start of a row's displayed range (safe-integer checked). */
+  getLineStart(row: number): number {
+    return offsetToNumber(this.scanner.getStart(row))
+  }
+
+  /** Inclusive byte end of a row's displayed range (CR/LF stripped). */
+  getLineEnd(row: number): number {
+    return offsetToNumber(this.scanner.getDisplayEnd(row)) - 1
+  }
+
+  /** Rows committed so far (grows while a scan is in flight). */
+  getCommittedRows(): number {
+    return this.scanner.getRowCount()
+  }
+
+  isComplete(): boolean {
+    return this.scanner.isComplete()
+  }
+
+  getHasCRLF(): boolean {
+    return this.scanner.getHasCRLF()
+  }
+
+  getInvalidUtf8Rows(): number {
+    return this.scanner.getInvalidUtf8Rows()
+  }
+
+  private emitIndexProgress(p: ScanProgress): void {
+    if (!this.operationId || !this.shouldEmitProgress()) return
+    const event: IndexProgressEvent = {
+      ns: 'jsonl-explorer',
+      v: 1,
+      type: 'indexProgress',
+      operationId: this.operationId,
+      progress: p.totalBytes === 0n ? 100 : Number((p.bytesScanned * 100n) / p.totalBytes),
+      rowsProcessed: p.rowsCommitted,
+      committedRows: p.rowsCommitted,
+      committedBytes: Number(p.bytesScanned),
+    }
+    self.postMessage(event)
   }
 
   private shouldEmitProgress(): boolean {
@@ -319,60 +295,6 @@ class Indexer {
     }
     return false
   }
-
-  private ensureCapacity(minRows: number): void {
-    const needed = this.state.committedRows + minRows + 1
-    if (this.state.lineStarts.length >= needed) return
-
-    const newCapacity = Math.max(this.state.lineStarts.length * 2, needed)
-    const newStarts = new Uint32Array(newCapacity)
-    const newStartsHi = new Uint32Array(newCapacity)
-    newStarts.set(this.state.lineStarts)
-    newStartsHi.set(this.state.lineStartsHi)
-    this.state.lineStarts = newStarts
-    this.state.lineStartsHi = newStartsHi
-  }
-
-  private addLineStart(offset: number): void {
-    const index = this.state.committedRows
-    if (index >= this.state.lineStarts.length) {
-      this.ensureCapacity(1024)
-    }
-
-    this.state.lineStarts[index] = offset & 0xffffffff
-    this.state.lineStartsHi[index] = (offset / 0x100000000) | 0
-  }
-
-  getLineStart(row: number): number {
-    const low = this.state.lineStarts[row] ?? 0
-    const high = this.state.lineStartsHi[row] ?? 0
-    return (high * 0x100000000) + (low >>> 0)
-  }
-
-  getLineEnd(row: number): number {
-    const start = this.getLineStart(row)
-    const nextStart = this.getLineStart(row + 1)
-    return nextStart > start ? nextStart - 1 : start
-  }
-
-  getCommittedRows(): number {
-    return this.state.committedRows
-  }
-
-  isComplete(): boolean {
-    return this.state.isComplete
-  }
-
-  getHasCRLF(): boolean {
-    return this.state.hasCRLF
-  }
-}
-
-function findNewline(buffer: Uint8Array, start: number): number {
-  for (let i = start; i < buffer.length; i++) {
-    if (buffer[i] === 0x0a) return i
-  }
-  return -1
 }
 
 // ============================================================================
@@ -662,6 +584,7 @@ self.onmessage = async (event: MessageEvent) => {
 function errorToErrorCode(error: unknown): ErrorCode {
   if (error instanceof PayloadTooLargeError) return 'HANDOVER_PAYLOAD_TOO_LARGE'
   if (error instanceof SourceDisposedError) return 'SOURCE_NOT_INITIALIZED'
+  if (error instanceof IndexAbortedError) return 'INDEXING_CANCELLED'
   return 'UNKNOWN'
 }
 
@@ -718,17 +641,19 @@ async function handleIndex(request: IndexRequest): Promise<void> {
   indexer.setOperationId(request.operationId)
 
   try {
-    const { totalRows, totalBytes } = await indexer.index((event) => self.postMessage(event))
+    const { totalRows, totalBytes, invalidUtf8Rows } = await indexer.index()
 
     currentGeneration++
 
     const response = createSuccessResponse(request.requestId, {
       totalRows,
       totalBytes,
+      invalidUtf8Rows,
     })
     self.postMessage(response)
   } catch (error) {
-    const response = createErrorResponse(request.requestId, 'INDEXING_FAILED', error instanceof Error ? error.message : String(error))
+    const code = error instanceof IndexAbortedError ? 'INDEXING_CANCELLED' : 'INDEXING_FAILED'
+    const response = createErrorResponse(request.requestId, code, error instanceof Error ? error.message : String(error))
     self.postMessage(response)
   }
 }
@@ -948,6 +873,10 @@ async function handleExportCancel(request: ExportCancelRequest): Promise<void> {
 }
 
 async function handleCancel(request: CancelRequest): Promise<void> {
+  // Cancellation is operation-scoped: in-flight index/filter runs observe the
+  // abort on their next chunk/row boundary and reject with typed errors.
+  indexer?.cancel()
+  filterEngine?.cancel()
   const response = createSuccessResponse(request.requestId, {})
   self.postMessage(response)
 }

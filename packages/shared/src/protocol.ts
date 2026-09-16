@@ -214,6 +214,12 @@ export interface IndexResponse extends BaseResponse {
   value: {
     totalRows: number
     totalBytes: number
+    /**
+     * Rows that contained invalid UTF-8 (decoded with replacement at display
+     * time). Absent or 0 when the document is valid; the UI shows one
+     * warning per load when non-zero.
+     */
+    invalidUtf8Rows?: number
   }
 }
 

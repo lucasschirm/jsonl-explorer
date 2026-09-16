@@ -59,9 +59,13 @@ export default defineNuxtConfig({
     },
   },
 
+  // The `nitro` key is typed via the `@nuxt/nitro-server` module augmentation
+  // (see types/nuxt-nitro.d.ts, which keeps it unconditional for fresh
+  // checkouts without a generated .nuxt/ directory).
+  // Prerendering `/` is what emits the SPA shell index.html for static hosting.
   nitro: {
     routeRules: {
-      // CSP headers for all routes
+      // Security headers for all routes
       '/**': {
         headers: {
           'Content-Security-Policy': csp,

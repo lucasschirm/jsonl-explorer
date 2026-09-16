@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@nuxt/eslint-config": "^0.3.0",
+    "@nuxt/nitro-server": "3.21.11",
     "@nuxtjs/tailwindcss": "^6.10.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20.19.43",
