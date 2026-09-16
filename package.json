@@ -1,0 +1,41 @@
+{
+  "name": "jsonl-explorer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "JSONL Explorer - A client-side web app to explore multi-GB JSONL files",
+  "scripts": {
+    "prepare": "husky install",
+    "lint": "eslint . --cache",
+    "format": "prettier --write \"**/*.{ts,vue,js,json,md}\"",
+    "typecheck": "tsc --noEmit -p packages/app/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/shared/tsconfig.json",
+    "test": "pnpm --filter=jsonl-explorer-app test:unit && pnpm --filter=jsonlex test:unit",
+    "test:unit": "pnpm --filter=jsonl-explorer-app test:unit && pnpm --filter=jsonlex test:unit",
+    "test:e2e": "playwright test",
+    "build": "pnpm --filter=jsonl-explorer-app build && pnpm --filter=jsonlex build",
+    "build:app": "pnpm --filter=jsonl-explorer-app build",
+    "build:cli": "pnpm --filter=jsonlex build",
+    "dev": "pnpm --filter=jsonl-explorer-app dev",
+    "preview": "pnpm --filter=jsonl-explorer-app preview",
+    "generate:app": "pnpm --filter=jsonl-explorer-app generate",
+    "screenshots": "pnpm --filter=jsonl-explorer-app screenshots",
+    "cli:pack": "pnpm --filter=jsonlex pack",
+    "ci": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e"
+  },
+  "engines": {
+    "node": ">=20.11.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.4.0",
+  "type": "module",
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-vue": "^9.23.0",
+    "husky": "^9.0.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}

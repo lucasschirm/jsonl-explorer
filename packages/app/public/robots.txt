@@ -1,0 +1,9 @@
+# JSONL Explorer - robots.txt
+User-agent: *
+Allow: /
+
+# Disallow private/debug routes
+Disallow: /api/
+
+# Sitemap
+Sitemap: https://jsonlexplorer.lucasschirm.com/sitemap.xml

@@ -1,0 +1,52 @@
+import typescriptEslint from '@typescript-eslint/eslint-plugin'
+import typescriptParser from '@typescript-eslint/parser'
+import vueEslint from 'eslint-plugin-vue'
+import vueParser from 'vue-eslint-parser'
+
+export default [
+  {
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      '.output/**',
+      '.nuxt/**',
+      'coverage/**',
+      '*.config.*',
+      'pnpm-lock.yaml',
+      'packages/**/dist/**',
+      'packages/**/.output/**',
+      'packages/**/.nuxt/**',
+    ],
+  },
+  {
+    files: ['**/*.{ts,vue,js}'],
+    languageOptions: {
+      parser: typescriptParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+        ecmaFeatures: { jsx: true },
+      },
+    },
+    plugins: {
+      '@typescript-eslint': typescriptEslint,
+      vue: vueEslint,
+    },
+    rules: {
+      ...vueEslint.configs['flat/recommended'].rules,
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      'vue/multi-word-component-names': 'off',
+      'vue/no-v-html': 'off',
+    },
+  },
+  {
+    files: ['**/*.vue'],
+    languageOptions: {
+      parser: vueParser,
+      parserOptions: {
+        parser: typescriptParser,
+      },
+    },
+  },
+]

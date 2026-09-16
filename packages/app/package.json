@@ -1,0 +1,45 @@
+{
+  "name": "jsonl-explorer-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "JSONL Explorer - Nuxt 3 SSG App",
+  "type": "module",
+  "scripts": {
+    "dev": "nuxi dev",
+    "build": "nuxi build",
+    "generate": "nuxi generate",
+    "preview": "nuxi preview",
+    "lint": "eslint . --ext .ts,.vue,.js --cache",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:e2e": "playwright test",
+    "screenshots": "npx tsx scripts/capture-screenshots.ts"
+  },
+  "dependencies": {
+    "@jsonl-explorer/shared": "workspace:*",
+    "@nuxt/content": "^2.12.0",
+    "@pinia/nuxt": "^0.5.0",
+    "@tanstack/vue-virtual": "^3.3.0",
+    "daisyui": "^4.7.0",
+    "jq-web": "^0.5.0",
+    "lucide-vue-next": "^0.350.0",
+    "pinia": "^2.1.0",
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "@nuxt/eslint-config": "^0.3.0",
+    "@nuxtjs/tailwindcss": "^6.10.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^20.19.43",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "@vue/test-utils": "^2.4.0",
+    "eslint": "^8.57.0",
+    "happy-dom": "^13.0.0",
+    "nuxt": "^3.11.0",
+    "playwright": "^1.42.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "jsonlex",
+  "version": "0.0.0",
+  "private": true,
+  "description": "JSONL Explorer CLI - serve JSONL files locally for the explorer",
+  "bin": {
+    "jsonlex": "./dist/index.mjs"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "lint": "eslint . --ext .ts --cache",
+    "pack": "pnpm pack"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.0",
+    "@jsonl-explorer/shared": "workspace:*",
+    "fastify": "^4.26.0",
+    "open": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "files": ["dist", "site"],
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}
