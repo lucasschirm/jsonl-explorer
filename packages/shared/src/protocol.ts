@@ -485,13 +485,6 @@ export function createErrorResponse(requestId: string, code: ErrorCode, message:
     ok: false,
     error: { code, message, details },
   }
-  return {
-    ns: PROTOCOL_NAMESPACE,
-    v: PROTOCOL_VERSION,
-    requestId,
-    ok: false,
-    error: { code, message, details },
-  }
 }
 
 export function createSuccessResponse<T>(requestId: string, value: T): SuccessResponse<T> {

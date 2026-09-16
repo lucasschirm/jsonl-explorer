@@ -38,6 +38,14 @@ import type {
   Generation,
 } from '@jsonl-explorer/shared'
 
+import {
+  FileSource,
+  MemorySource,
+  PayloadTooLargeError,
+  SourceDisposedError,
+} from '../engine/sources/index.js'
+import type { JsonlSource } from '../engine/sources/index.js'
+
 // Re-export shared types
 export type {
   WorkerRequest,
@@ -63,39 +71,8 @@ const INDEX_BLOCK_GROWTH_FACTOR = 2
 // Source Types
 // ============================================================================
 
-interface JsonlSource {
-  readRange(offset: number, length: number): Promise<Uint8Array>
-  getSize(): Promise<number>
-  getName(): string
-  dispose(): Promise<void>
-}
-
-class FileSource implements JsonlSource {
-  private file: File
-
-  constructor(file: File) {
-    this.file = file
-  }
-
-  async readRange(offset: number, length: number): Promise<Uint8Array> {
-    const slice = this.file.slice(offset, offset + length)
-    return new Uint8Array(await slice.arrayBuffer())
-  }
-
-  async getSize(): Promise<number> {
-    return this.file.size
-  }
-
-  getName(): string {
-    return this.file.name
-  }
-
-  async dispose(): Promise<void> {
-    // File is owned by main thread, nothing to dispose
-  }
-}
-
 class UrlSource implements JsonlSource {
+  readonly name: string
   private url: string
   private headers: Record<string, string>
   private opfsDir: FileSystemDirectoryHandle | null = null
@@ -107,26 +84,27 @@ class UrlSource implements JsonlSource {
   constructor(url: string, headers: Record<string, string>) {
     this.url = url
     this.headers = headers
+    this.name = new URL(url).pathname.split('/').pop() || 'remote.jsonl'
   }
 
-  async readRange(offset: number, length: number): Promise<Uint8Array> {
+  async readRange(offset: bigint | number, length: number): Promise<Uint8Array> {
     await this.ensureDownloaded()
-    if (this.opfsWriter) {
-      const buffer = new Uint8Array(length)
-      const read = this.opfsWriter.read(buffer, { at: offset })
-      return buffer.subarray(0, read)
+    if (!this.opfsWriter) {
+      throw new Error('URL source memory fallback not implemented')
     }
-    throw new Error('URL source memory fallback not implemented')
+    const at = Number(offset)
+    if (!Number.isSafeInteger(at)) {
+      throw new RangeError(`Unsupported read offset: ${offset}`)
+    }
+    const buffer = new Uint8Array(length)
+    const read = this.opfsWriter.read(buffer, { at })
+    return buffer.subarray(0, read)
   }
 
-  async getSize(): Promise<number> {
-    if (this.size !== null) return this.size
+  async getSize(): Promise<bigint> {
+    if (this.size !== null) return BigInt(this.size)
     await this.ensureDownloaded()
-    return this.size ?? 0
-  }
-
-  getName(): string {
-    return this.url
+    return BigInt(this.size ?? 0)
   }
 
   private async ensureDownloaded(): Promise<void> {
@@ -194,36 +172,6 @@ class UrlSource implements JsonlSource {
   }
 }
 
-class MemorySource implements JsonlSource {
-  private data: Uint8Array
-  private name: string
-
-  constructor(name: string, payload: string | ArrayBuffer) {
-    this.name = name
-    if (payload instanceof ArrayBuffer) {
-      this.data = new Uint8Array(payload)
-    } else {
-      this.data = new TextEncoder().encode(payload)
-    }
-  }
-
-  async readRange(offset: number, length: number): Promise<Uint8Array> {
-    return this.data.subarray(offset, offset + length)
-  }
-
-  async getSize(): Promise<number> {
-    return this.data.byteLength
-  }
-
-  getName(): string {
-    return this.name
-  }
-
-  async dispose(): Promise<void> {
-    // Nothing to dispose
-  }
-}
-
 // ============================================================================
 // Indexer
 // ============================================================================
@@ -272,7 +220,9 @@ class Indexer {
   }
 
   async index(onProgress?: (event: IndexProgressEvent) => void): Promise<{ totalRows: number; totalBytes: number }> {
-    const size = await this.source.getSize()
+    // NOTE: number-based indexing is temporary; TSK0012 migrates the indexer
+    // to bigint offsets and engine/indexer.ts (OffsetIndex).
+    const size = Number(await this.source.getSize())
     this.state.totalBytes = size
 
     this.ensureCapacity(1)
@@ -699,9 +649,20 @@ self.onmessage = async (event: MessageEvent) => {
       }
     }
   } catch (error) {
-    const response = createErrorResponse(request.requestId, 'UNKNOWN', error instanceof Error ? error.message : String(error))
+    const response = createErrorResponse(
+      request.requestId,
+      errorToErrorCode(error),
+      error instanceof Error ? error.message : String(error),
+    )
     self.postMessage(response)
   }
+}
+
+/** Maps engine errors to protocol error codes so failures stay typed. */
+function errorToErrorCode(error: unknown): ErrorCode {
+  if (error instanceof PayloadTooLargeError) return 'HANDOVER_PAYLOAD_TOO_LARGE'
+  if (error instanceof SourceDisposedError) return 'SOURCE_NOT_INITIALIZED'
+  return 'UNKNOWN'
 }
 
 async function handleInitFile(request: InitFileRequest): Promise<void> {
@@ -725,7 +686,7 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
   currentGeneration = 0
 
   const response = createSuccessResponse(request.requestId, {
-    name: new URL(request.url).pathname.split('/').pop() || 'remote.jsonl',
+    name: source.name,
     size: 0,
     type: 'url',
   })
@@ -738,9 +699,10 @@ async function handleInitMemory(request: InitMemoryRequest): Promise<void> {
   filterEngine = new FilterEngine(indexer, source)
   currentGeneration = 0
 
+  const size = await source.getSize()
   const response = createSuccessResponse(request.requestId, {
     name: request.name,
-    size: request.payload instanceof ArrayBuffer ? request.payload.byteLength : new TextEncoder().encode(request.payload).length,
+    size: Number(size),
     type: 'handover',
   })
   self.postMessage(response)
