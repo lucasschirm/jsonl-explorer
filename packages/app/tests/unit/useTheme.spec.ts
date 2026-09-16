@@ -1,11 +1,11 @@
 /// <reference types="vitest/globals" />
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import { useTheme, getCurrentTheme } from '../../composables/useTheme'
 
 describe('useTheme', () => {
-  let matchMediaMock: vi.Mock
-  let addEventListenerMock: vi.Mock
-  let removeEventListenerMock: vi.Mock
+  let matchMediaMock: Mock
+  let addEventListenerMock: Mock
+  let removeEventListenerMock: Mock
   let originalMatchMedia: typeof window.matchMedia
 
   beforeEach(() => {

@@ -192,7 +192,7 @@ describe('Toast Store', () => {
     const id = store.add({ type: 'info', message: 'Test' })
 
     expect(store.toasts).toHaveLength(1)
-    expect(store.toasts[0].message).toBe('Test')
+    expect(store.toasts[0]!.message).toBe('Test')
 
     store.remove(id)
     expect(store.toasts).toHaveLength(0)
@@ -227,14 +227,14 @@ describe('Toast Store', () => {
     const { id, update, done } = store.progress('Loading...')
 
     expect(store.toasts).toHaveLength(1)
-    expect(store.toasts[0].progress).toBe(0)
+    expect(store.toasts[0]!.progress).toBe(0)
 
     update(50)
-    expect(store.toasts[0].progress).toBe(50)
+    expect(store.toasts[0]!.progress).toBe(50)
 
     done(true)
-    expect(store.toasts[0].progress).toBe(100)
-    expect(store.toasts[0].type).toBe('success')
+    expect(store.toasts[0]!.progress).toBe(100)
+    expect(store.toasts[0]!.type).toBe('success')
   })
 })
 

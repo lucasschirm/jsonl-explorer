@@ -7,7 +7,7 @@
     "prepare": "husky install",
     "lint": "eslint . --cache",
     "format": "prettier --write \"**/*.{ts,vue,js,json,md}\"",
-    "typecheck": "tsc --noEmit -p packages/app/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/shared/tsconfig.json",
+    "typecheck": "tsc --noEmit -p packages/app/tsconfig.json && tsc --noEmit -p packages/app/tsconfig.test.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.test.json && tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/shared/tsconfig.test.json",
     "test": "pnpm --filter=jsonl-explorer-app test:unit && pnpm --filter=jsonlex test:unit",
     "test:unit": "pnpm --filter=jsonl-explorer-app test:unit && pnpm --filter=jsonlex test:unit",
     "test:e2e": "playwright test",

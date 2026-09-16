@@ -112,9 +112,10 @@ describe('JsonlScanner: row semantics', () => {
     await scanner.scan({ onRow: (row) => rows.push(row) })
     expect(rows).toHaveLength(3)
     for (let i = 0; i < 3; i++) {
-      expect(rows[i].rowId).toBe(i)
-      expect(scanner.getStart(i)).toBe(rows[i].start)
-      expect(scanner.getDisplayEnd(i)).toBe(rows[i].displayEnd)
+      const row = rows[i]!
+      expect(row.rowId).toBe(i)
+      expect(scanner.getStart(i)).toBe(row.start)
+      expect(scanner.getDisplayEnd(i)).toBe(row.displayEnd)
     }
   })
 })

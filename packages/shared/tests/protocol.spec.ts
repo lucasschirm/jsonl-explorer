@@ -182,7 +182,7 @@ describe('Worker RPC Protocol', () => {
     })
 
     it('should detect error response', () => {
-      const errorResp = createErrorResponse('req-1', 'TEST', 'Error')
+      const errorResp = createErrorResponse('req-1', ErrorCode.UNKNOWN, 'Error')
       const successResp = createSuccessResponse('req-1', {})
 
       expect(isErrorResponse(errorResp)).toBe(true)
@@ -192,7 +192,7 @@ describe('Worker RPC Protocol', () => {
     it('should detect success response', () => {
       const successResp = createSuccessResponse('req-1', {})
       expect(isSuccessResponse(successResp)).toBe(true)
-      expect(isSuccessResponse(createErrorResponse('req-1', 'TEST', 'Error'))).toBe(false)
+      expect(isSuccessResponse(createErrorResponse('req-1', ErrorCode.UNKNOWN, 'Error'))).toBe(false)
     })
   })
 
@@ -222,7 +222,7 @@ describe('Worker RPC Protocol', () => {
 
   describe('Type guards', () => {
     it('should correctly identify error response', () => {
-      const errorResp = createErrorResponse('req-1', 'TEST', 'Error')
+      const errorResp = createErrorResponse('req-1', ErrorCode.UNKNOWN, 'Error')
       const successResp = createSuccessResponse('req-1', { data: 'ok' })
 
       expect(isErrorResponse(errorResp)).toBe(true)
@@ -231,7 +231,7 @@ describe('Worker RPC Protocol', () => {
 
     it('should correctly identify success response', () => {
       const successResp = createSuccessResponse('req-1', { data: 'ok' })
-      const errorResp = createErrorResponse('req-1', 'TEST', 'Error')
+      const errorResp = createErrorResponse('req-1', ErrorCode.UNKNOWN, 'Error')
 
       expect(isSuccessResponse(successResp)).toBe(true)
       expect(isSuccessResponse(errorResp)).toBe(false)
