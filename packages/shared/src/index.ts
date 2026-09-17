@@ -5,4 +5,5 @@
  */
 
 export * from './handover.js'
+export * from './headers.js'
 export * from './protocol.js'

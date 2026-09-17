@@ -3,6 +3,12 @@ import { ref, watch, computed } from 'vue'
 import { useToastStore } from '~/stores/toasts'
 import { useFileStore } from '~/stores/file'
 import { useRouter } from 'vue-router'
+import {
+  decideHeaderRow,
+  decideUrlInput,
+  type HeaderRowIntake,
+  type UrlIntake,
+} from '~/utils/urlIntake'
 
 interface HeaderEntry {
   key: string
@@ -11,13 +17,15 @@ interface HeaderEntry {
 
 interface Props {
   open: boolean
+  /** Non-secret URL to prefill on the first open (startup-recovery flow). */
+  initialUrl?: string
 }
 
 interface Emits {
   (e: 'update:open', value: boolean): void
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), { initialUrl: '' })
 const emit = defineEmits<Emits>()
 
 const router = useRouter()
@@ -27,67 +35,14 @@ const fileStore = useFileStore()
 const url = ref('')
 const headers = ref<HeaderEntry[]>([{ key: '', value: '' }])
 const isLoading = ref(false)
-const urlError = ref('')
+let hasPrefilled = false
 
-// Forbidden header names (browser-forbidden)
-const forbiddenHeaders = new Set([
-  'accept-charset',
-  'accept-encoding',
-  'access-control-request-headers',
-  'access-control-request-method',
-  'connection',
-  'content-length',
-  'cookie',
-  'cookie2',
-  'date',
-  'dnt',
-  'expect',
-  'host',
-  'keep-alive',
-  'origin',
-  'referer',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'user-agent',
-  'via',
-])
-
-function validateUrl(input: string): boolean {
-  try {
-    const u = new URL(input)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      urlError.value = 'Only HTTP/HTTPS URLs are allowed'
-      return false
-    }
-    // Reject URLs with credentials
-    if (u.username || u.password) {
-      urlError.value = 'URLs with embedded credentials are not allowed'
-      return false
-    }
-    // Reject URLs with fragments
-    if (u.hash) {
-      urlError.value = 'URL fragments are not allowed'
-      return false
-    }
-    urlError.value = ''
-    return true
-  } catch {
-    urlError.value = 'Invalid URL format'
-    return false
-  }
-}
-
-function validateHeader(key: string, value: string): string | null {
-  const lowerKey = key.toLowerCase().trim()
-  if (!lowerKey) return 'Header name cannot be empty'
-  if (forbiddenHeaders.has(lowerKey)) return `Header "${key}" is forbidden by the browser`
-  if (/[\r\n]/.test(key) || /[\r\n]/.test(value)) return 'Header cannot contain line breaks'
-  if (key.length > 256) return 'Header name too long (max 256 chars)'
-  if (value.length > 4096) return 'Header value too long (max 4096 chars)'
-  return null
-}
+/** Live URL validation (decideUrlInput is pure; see utils/urlIntake.ts). */
+const urlIntake = computed<UrlIntake>(() => decideUrlInput(url.value))
+const urlError = computed(() =>
+  urlIntake.value.kind === 'invalid' ? urlIntake.value.message : '',
+)
+const isUrlValid = computed(() => urlIntake.value.kind === 'ready')
 
 function addHeader() {
   headers.value.push({ key: '', value: '' })
@@ -98,31 +53,42 @@ function removeHeader(index: number) {
   headers.value.splice(index, 1)
 }
 
+/** Validates every header row (blank starter rows are skipped). */
+const headerIntakes = computed<HeaderRowIntake[]>(() => {
+  const seen = new Set<string>()
+  return headers.value.map((h) => decideHeaderRow(h.key, h.value, seen))
+})
+
 const headerErrors = computed(() => {
   const errors: Record<number, string> = {}
-  const seen = new Set<string>()
-  headers.value.forEach((h, i) => {
-    const key = h.key.trim().toLowerCase()
-    if (key && seen.has(key)) {
-      errors[i] = `Duplicate header: ${h.key}`
-    }
-    seen.add(key)
-    const err = validateHeader(h.key, h.value)
-    if (err) errors[i] = err
+  headerIntakes.value.forEach((intake, i) => {
+    if (intake.kind === 'invalid') errors[i] = intake.message
   })
   return errors
 })
 
 const hasHeaderErrors = computed(() => Object.keys(headerErrors.value).length > 0)
 
-const validHeaders = computed(() =>
-  headers.value
-    .filter((h) => h.key.trim() && !headerErrors.value[headers.value.indexOf(h)])
-    .map((h) => [h.key.trim(), h.value.trim()] as [string, string])
+/** True when any row looks like it carries credentials (warning only). */
+const hasCredentialLikeHeader = computed(() =>
+  headerIntakes.value.some((h) => h.kind === 'ready' && h.credentialLike),
+)
+
+/** Row-level mask: credential-like values are hidden by default. */
+function isCredentialRow(index: number): boolean {
+  const intake = headerIntakes.value[index]
+  return intake?.kind === 'ready' && intake.credentialLike
+}
+
+/** The ready rows as fetch-ready [name, value] pairs. */
+const readyHeaders = computed<[string, string][]>(() =>
+  headerIntakes.value
+    .filter((h): h is Extract<HeaderRowIntake, { kind: 'ready' }> => h.kind === 'ready')
+    .map((h) => [h.name, h.value]),
 )
 
 async function onSubmit() {
-  if (!validateUrl(url.value)) return
+  if (urlIntake.value.kind !== 'ready') return
   if (hasHeaderErrors.value) {
     toastStore.warning('Please fix header errors before proceeding', 'Invalid headers')
     return
@@ -130,10 +96,18 @@ async function onSubmit() {
 
   isLoading.value = true
   try {
-    await fileStore.loadFromUrl(url.value, Object.fromEntries(validHeaders.value))
+    // Normalized URL + validated headers go to the worker. Header values
+    // (potentially credentials) are never logged, persisted, or echoed
+    // into error messages.
+    await fileStore.loadFromUrl(
+      urlIntake.value.url,
+      Object.fromEntries(readyHeaders.value),
+    )
     emit('update:open', false)
     await router.push('/explorer')
   } catch (error) {
+    // Recoverable failure: stay on landing with the entered URL so the
+    // user can retry immediately (form is preserved, not reset).
     const message = error instanceof Error ? error.message : 'Failed to load from URL'
     toastStore.error(message, 'URL load failed')
   } finally {
@@ -149,14 +123,23 @@ function onCancel() {
 function resetForm() {
   url.value = ''
   headers.value = [{ key: '', value: '' }]
-  urlError.value = ''
 }
 
 watch(
   () => props.open,
   (open) => {
-    if (!open) resetForm()
-  }
+    if (open) {
+      // First open: prefill a recovered URL (memory-only, via
+      // useUrlRecovery) so a failed startup can be retried in place.
+      if (!hasPrefilled && props.initialUrl !== '') {
+        url.value = props.initialUrl
+        hasPrefilled = true
+      }
+    } else {
+      resetForm()
+    }
+  },
+  { immediate: true },
 )
 </script>
 
@@ -177,7 +160,6 @@ watch(
               type="url"
               class="input input-bordered w-full pr-10"
               placeholder="https://example.com/data.jsonl"
-              @blur="validateUrl(url)"
               aria-describedby="url-error"
               :aria-invalid="!!urlError"
             />
@@ -221,15 +203,13 @@ watch(
                 class="input input-bordered flex-1"
                 placeholder="Header name (e.g., Authorization)"
                 :aria-invalid="!!headerErrors[index]"
-                @input="$forceUpdate()"
               />
               <input
                 v-model="header.value"
-                type="text"
+                :type="isCredentialRow(index) ? 'password' : 'text'"
                 class="input input-bordered flex-1"
                 placeholder="Header value"
                 :aria-invalid="!!headerErrors[index]"
-                @input="$forceUpdate()"
               />
               <button
                 type="button"
@@ -252,13 +232,26 @@ watch(
             </ul>
           </div>
 
-          <div class="alert alert-warning gap-2 text-xs mt-2">
+          <div v-if="hasCredentialLikeHeader" class="alert alert-warning gap-2 text-xs mt-2" role="alert">
             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <div>
-              <strong>Security note:</strong> Authorization and other sensitive headers are kept in memory only.
-              They are never logged, sent to analytics, or included in error reports.
+              <strong>Credential notice:</strong> A header looks like it carries
+              credentials (e.g. Authorization). It is sent only to the destination
+              server and kept in memory only — never persisted, logged, or echoed
+              in errors.
+            </div>
+          </div>
+
+          <div class="alert alert-info gap-2 text-xs mt-2">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <strong>Security note:</strong> Authorization and other sensitive
+              headers are kept in memory only. They are never logged, sent to
+              analytics, or included in error reports.
             </div>
           </div>
         </div>
@@ -275,7 +268,7 @@ watch(
           <button
             @click="onSubmit"
             class="btn btn-primary"
-            :disabled="isLoading || !validateUrl(url) || hasHeaderErrors"
+            :disabled="isLoading || !isUrlValid || hasHeaderErrors"
           >
             <svg v-if="isLoading" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />

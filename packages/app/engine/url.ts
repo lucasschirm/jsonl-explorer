@@ -11,6 +11,8 @@
  *   logs, toasts, or the main thread.
  */
 
+import { isValidHeaderName } from '@jsonl-explorer/shared'
+
 /** Header names the worker must never put on the wire (lowercase). */
 const FORBIDDEN_HEADERS = new Set([
   'accept-encoding',
@@ -25,9 +27,6 @@ const FORBIDDEN_HEADERS = new Set([
   'transfer-encoding',
   'upgrade',
 ])
-
-/** RFC 7230 header-name token charset. */
-const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
 
 /** Typed error: the URL is not parseable or not http(s). */
 export class UrlValidationError extends Error {
@@ -102,7 +101,7 @@ export function sanitizeHeaders(headers?: Record<string, string>): Record<string
   if (!headers) return {}
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(headers)) {
-    if (!HEADER_NAME_RE.test(name)) {
+    if (!isValidHeaderName(name)) {
       throw new UrlInvalidHeadersError(`"${name}" is not a valid header name`)
     }
     if (FORBIDDEN_HEADERS.has(name.toLowerCase())) continue

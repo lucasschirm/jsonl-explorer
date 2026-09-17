@@ -3,30 +3,58 @@ import { onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFileStore } from '~/stores/file'
 import { useToastStore } from '~/stores/toasts'
+import { useUrlRecovery } from '~/composables/useUrlRecovery'
+import { decideUrlInput } from '~/utils/urlIntake'
 
 const router = useRouter()
 const route = useRoute()
 const fileStore = useFileStore()
 const toastStore = useToastStore()
+const recovery = useUrlRecovery()
 
-onMounted(async () => {
-  // Check for URL bootstrap parameter
+/**
+ * Consume the `?url=` bootstrap (R5): scrub, load, then strip the param.
+ * On failure the non-secret URL is kept in memory (useUrlRecovery) so the
+ * landing page can offer an immediate retry.
+ * @returns true when a `?url=` bootstrap was present (handled or failed).
+ */
+async function consumeUrlBootstrap(): Promise<boolean> {
   const urlParam = route.query.url
-  if (urlParam && typeof urlParam === 'string') {
-    try {
-      await fileStore.loadFromUrl(decodeURIComponent(urlParam))
-      // Clean up URL after consumption
-      if (import.meta.client) {
-        history.replaceState({}, '', '/explorer')
-      }
-    } catch (error) {
-      toastStore.error('Failed to load from URL parameter', 'Load failed')
-      await router.push('/')
+  if (!urlParam || typeof urlParam !== 'string') return false
+
+  // route.query values are already decoded once by vue-router; do not
+  // decode again (a second pass corrupts URLs containing literal '%').
+  const intake = decideUrlInput(urlParam)
+  if (intake.kind !== 'ready') {
+    if (intake.kind === 'invalid') {
+      toastStore.error(intake.message, 'Invalid URL parameter')
     }
+    await router.push('/')
+    return true
   }
 
-  // Guard: redirect to landing if no file loaded
-  if (!fileStore.hasFile) {
+  try {
+    await fileStore.loadFromUrl(intake.url)
+    // The URL (possibly with a query string) never stays in the address bar.
+    if (import.meta.client) {
+      history.replaceState({}, '', '/explorer')
+    }
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load from URL parameter'
+    toastStore.error(message, 'URL load failed')
+    recovery.setRecoveredUrl(intake.url)
+    await router.push('/')
+  }
+  return true
+}
+
+onMounted(async () => {
+  const hadBootstrap = await consumeUrlBootstrap()
+
+  // Guard: redirect to landing if no file loaded (only when there was no
+  // bootstrap to report on — a failed bootstrap already navigated + toasted).
+  if (!hadBootstrap && !fileStore.hasFile) {
     toastStore.info('No file loaded. Please open a JSONL file first.', 'No file')
     await router.push('/')
   }

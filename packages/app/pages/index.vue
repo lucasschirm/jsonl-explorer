@@ -1,9 +1,21 @@
 <script setup lang="ts">
 import FileDropZone from '~/components/landing/FileDropZone.vue'
 import UrlOpenModal from '~/components/landing/UrlOpenModal.vue'
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
+import { useUrlRecovery } from '~/composables/useUrlRecovery'
 
 const showUrlModal = ref(false)
+const initialUrl = ref('')
+
+// PLAN 4.1: if a URL startup failed, we land here with the entered
+// (non-secret) URL in memory — reopen the modal prefilled for a retry.
+onMounted(() => {
+  const recovered = useUrlRecovery().consumeRecoveredUrl()
+  if (recovered) {
+    initialUrl.value = recovered
+    showUrlModal.value = true
+  }
+})
 </script>
 
 <template>
@@ -71,6 +83,6 @@ const showUrlModal = ref(false)
     </div>
 
     <!-- URL Open Modal -->
-    <UrlOpenModal v-model:open="showUrlModal" />
+    <UrlOpenModal v-model:open="showUrlModal" :initial-url="initialUrl" />
   </div>
 </template>

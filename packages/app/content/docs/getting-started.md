@@ -19,6 +19,12 @@ Click the drop zone to open your system's file picker and select a file.
 
 Click "Open from URL" to load a JSONL file from a public HTTP/HTTPS endpoint. You can also specify custom headers (e.g., for authentication).
 
+### URL rules
+
+- Only `http://` and `https://` URLs are accepted.
+- URLs with embedded credentials (`user:pass@host`) or fragments (`#...`) are rejected — put secrets in headers instead.
+- If the fetch fails (network, CORS, non-2xx), the modal stays open with your URL so you can retry. Error messages never include header values.
+
 ### Header Security
 
 Custom headers are kept in memory only and are never:
@@ -26,6 +32,8 @@ Custom headers are kept in memory only and are never:
 - Sent to analytics
 - Included in error reports
 - Stored in browser history
+
+Headers that look like credentials (e.g. `Authorization`) are masked by default and flagged with a notice; duplicate, forbidden, or line-break-injecting header names are rejected with an inline error.
 
 ## Supported Formats
 

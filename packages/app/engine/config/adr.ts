@@ -344,6 +344,25 @@ export const CLI_CONFIG = {
  *   boundary; source bytes and offset/match indexes never enter Pinia or
  *   Vue proxies (the engine handle is a shallowRef, never deep-reactive).
  *
+ * URL intake (secret-safe modal, TSK0018):
+ * - The page validates URLs (http/https only; embedded userinfo and
+ *   fragments rejected) and header rows (token charset, browser-forbidden
+ *   names, length caps, CRLF injection, duplicates) in pure functions
+ *   (utils/urlIntake.ts) BEFORE anything reaches the worker; the worker
+ *   re-validates/sanitizes as defense in depth (engine/url.ts). Both sides
+ *   share the RFC 7230 token rule from packages/shared (headers.ts).
+ * - The engine receives the URL in its normalized `URL#toString()` form
+ *   only. Header values (potentially credentials) travel to the worker
+ *   and stay there: they never enter the router, stores, toasts, or logs.
+ * - Credential-like header names (Authorization, API keys, tokens, ...) are
+ *   flagged with a non-blocking warning and masked in the input field.
+ * - A failed URL startup keeps the entered (non-secret) URL in a
+ *   memory-only composable (useUrlRecovery) so the landing page can reopen
+ *   the modal prefilled for a retry; the value never touches routes or
+ *   persistence. The `?url=` bootstrap (R5) is decoded exactly once
+ *   (vue-router already decodes), scrubbed through the same rules, and
+ *   stripped from the address bar after a successful init.
+ *
  * References: PLAN.md 4.2
  */
 
