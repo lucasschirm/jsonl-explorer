@@ -363,6 +363,23 @@ export const CLI_CONFIG = {
  *   (vue-router already decodes), scrubbed through the same rules, and
  *   stripped from the address bar after a successful init.
  *
+ * Loading UX (progress, cancellation, consent, TSK0019):
+ * - Progress is slot-based in the engine composable: `download`, `index`,
+ *   and `filter` slots are independent, so a URL load can show download
+ *   percent AND committed rows simultaneously. Determinate percents come
+ *   only from plain (unencoded) sizes; compressed/unknown responses are
+ *   indeterminate (R12).
+ * - File/handover sources start a background index right after init: the
+ *   explorer can be entered immediately and rows appear as they commit.
+ * - Cancel is operation-scoped: the composable tracks the active
+ *   operationId and drops progress events from older operations, so a
+ *   cancel/restart can never surface stale progress. A cancelled index
+ *   leaves a resumable state ('cancelled'), not an error.
+ * - The OPFS-fallback consent (urlFallbackConfirm) is answered by a global
+ *   modal (app.vue -> FallbackConfirmModal); until it answers, the worker
+ *   pauses the download. A stale consent (source reset/fatal) is answered
+ *   false — never a silent fallback.
+ *
  * References: PLAN.md 4.2
  */
 

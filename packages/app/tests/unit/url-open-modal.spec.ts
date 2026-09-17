@@ -245,6 +245,90 @@ describe('UrlOpenModal', () => {
     expect(urlInput().value).toBe('https://example.com/secret.jsonl')
   })
 
+  it('shows download and index progress during the load', async () => {
+    mountModal()
+    await nextTick()
+
+    await setUrl('https://example.com/data.jsonl')
+    openButton().click()
+    await vi.waitFor(() => expect(worker.posted.length).toBe(1))
+    const request = worker.posted[0] as PostedInit & { operationId: string }
+
+    worker.emit({
+      ns: 'jsonl-explorer',
+      v: 1,
+      type: 'urlProgress',
+      operationId: request.operationId,
+      receivedBytes: 512,
+      totalBytes: 2048,
+    })
+    await nextTick()
+    let text = document.body.textContent ?? ''
+    expect(text).toContain('Downloading data.jsonl')
+    expect(text).toContain('25%')
+
+    worker.emit({
+      ns: 'jsonl-explorer',
+      v: 1,
+      type: 'indexProgress',
+      operationId: request.operationId,
+      progress: 10,
+      committedRows: 12,
+      committedBytes: 256,
+      rowsProcessed: 12,
+      totalBytes: 2048,
+    })
+    await nextTick()
+    text = document.body.textContent ?? ''
+    // Both phases are visible at once.
+    expect(text).toContain('Downloading data.jsonl')
+    expect(text).toContain('Indexing')
+    expect(text).toContain('12 rows')
+
+    // Complete the load: the panel goes away.
+    worker.emit(
+      success(request.requestId as string, { name: 'data.jsonl', size: 2048, type: 'url' }),
+    )
+    await flushPromises()
+    text = document.body.textContent ?? ''
+    expect(text).not.toContain('Downloading')
+    expect(pushed).toEqual(['/explorer'])
+  })
+
+  it('cancels the in-flight load and keeps the form for a retry', async () => {
+    mountModal()
+    await nextTick()
+
+    await setUrl('https://example.com/data.jsonl')
+    openButton().click()
+    await vi.waitFor(() => expect(worker.posted.length).toBe(1))
+    const request = worker.posted[0] as PostedInit & { operationId: string }
+
+    const cancel = document.body.querySelector('button[data-testid="loading-cancel"]') as HTMLButtonElement
+    cancel.click()
+    await vi.waitFor(() =>
+      expect(worker.posted.some((m) => (m as { type?: string }).type === 'cancel')).toBe(true),
+    )
+    const cancelMsg = worker.posted.find((m) => (m as { type?: string }).type === 'cancel') as {
+      requestId: string
+      operationId: string
+    }
+    // Operation-scoped: the cancel carries the init's operation id.
+    expect(cancelMsg.operationId).toBe(request.operationId)
+
+    worker.emit(success(cancelMsg.requestId, {}))
+    worker.emit(failure(request.requestId as string, 'CANCELLED', 'Cancelled'))
+    await flushPromises()
+
+    // Not an error: an info toast, no navigation, form preserved.
+    const toastStore = useToastStore()
+    expect(toastStore.toasts.some((t) => t.type === 'info' && t.message === 'Load cancelled')).toBe(true)
+    expect(toastStore.toasts.some((t) => t.type === 'error')).toBe(false)
+    expect(pushed).toEqual([])
+    expect(document.body.querySelector('.modal-box')).toBeTruthy()
+    expect(urlInput().value).toBe('https://example.com/data.jsonl')
+  })
+
   it('prefills a recovered URL on first open only', async () => {
     const recovered = 'https://recovered.example.com/data.jsonl'
     mountModal({ initialUrl: recovered })

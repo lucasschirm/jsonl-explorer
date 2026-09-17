@@ -2,6 +2,8 @@
 import { ref, watch, computed } from 'vue'
 import { useToastStore } from '~/stores/toasts'
 import { useFileStore } from '~/stores/file'
+import { useJsonlEngine } from '~/composables/useJsonlEngine'
+import { EngineRpcError } from '~/engine/index'
 import { useRouter } from 'vue-router'
 import {
   decideHeaderRow,
@@ -9,6 +11,7 @@ import {
   type HeaderRowIntake,
   type UrlIntake,
 } from '~/utils/urlIntake'
+import LoadingPanel from '~/components/loading/LoadingPanel.vue'
 
 interface HeaderEntry {
   key: string
@@ -31,6 +34,9 @@ const emit = defineEmits<Emits>()
 const router = useRouter()
 const toastStore = useToastStore()
 const fileStore = useFileStore()
+const engineApi = useJsonlEngine()
+// Refs inside plain objects are not auto-unwrapped in templates.
+const progress = computed(() => engineApi.progress.value)
 
 const url = ref('')
 const headers = ref<HeaderEntry[]>([{ key: '', value: '' }])
@@ -106,6 +112,12 @@ async function onSubmit() {
     emit('update:open', false)
     await router.push('/explorer')
   } catch (error) {
+    // A user cancel is not an error: stay in the modal with the form so
+    // the load can be retried in place.
+    if (error instanceof EngineRpcError && error.code === 'CANCELLED') {
+      toastStore.info('Load cancelled')
+      return
+    }
     // Recoverable failure: stay on landing with the entered URL so the
     // user can retry immediately (form is preserved, not reset).
     const message = error instanceof Error ? error.message : 'Failed to load from URL'
@@ -118,6 +130,28 @@ async function onSubmit() {
 function onCancel() {
   emit('update:open', false)
   resetForm()
+}
+
+/** Short display label for the loading panel (URL tail, fallback to host). */
+const sourceLabel = computed(() => {
+  if (urlIntake.value.kind !== 'ready') return ''
+  try {
+    const parsed = new URL(urlIntake.value.url)
+    const tail = parsed.pathname.split('/').filter(Boolean).pop()
+    return tail ?? parsed.host
+  } catch {
+    return urlIntake.value.url
+  }
+})
+
+/** Cancels the in-flight download (operation-scoped); the form is kept. */
+async function onCancelLoad() {
+  try {
+    await engineApi.cancelActive()
+  } catch {
+    // The cancel RPC itself failing is not actionable here; the load
+    // outcome (success/error) still resolves through onSubmit's catch.
+  }
 }
 
 function resetForm() {
@@ -255,6 +289,18 @@ watch(
             </div>
           </div>
         </div>
+
+        <!-- Loading progress: download and index are separate slots
+             (TSK0019); cancel is operation-scoped and keeps the form. -->
+        <LoadingPanel
+          v-if="isLoading"
+          class="mt-4"
+          :source-name="sourceLabel"
+          :download="progress.download"
+          :index="progress.index"
+          :cancellable="true"
+          @cancel="onCancelLoad"
+        />
 
         <!-- Actions -->
         <div class="modal-action">

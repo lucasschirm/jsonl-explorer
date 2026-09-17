@@ -1,16 +1,33 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFileStore } from '~/stores/file'
 import { useToastStore } from '~/stores/toasts'
 import { useUrlRecovery } from '~/composables/useUrlRecovery'
+import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { decideUrlInput } from '~/utils/urlIntake'
+import LoadingPanel from '~/components/loading/LoadingPanel.vue'
 
 const router = useRouter()
 const route = useRoute()
 const fileStore = useFileStore()
 const toastStore = useToastStore()
 const recovery = useUrlRecovery()
+const engineApi = useJsonlEngine()
+
+// Background indexing (TSK0019): file/handover sources are indexed after
+// init, so the explorer is entered while rows keep committing.
+const progress = computed(() => engineApi.progress.value)
+const indexState = computed(() => engineApi.indexState.value)
+const indexing = computed(() => indexState.value === 'running')
+
+async function cancelIndex() {
+  await engineApi.cancelActive()
+}
+
+async function resumeIndex() {
+  await engineApi.startIndex()
+}
 
 /**
  * Consume the `?url=` bootstrap (R5): scrub, load, then strip the param.
@@ -90,6 +107,36 @@ async function resetFile() {
       </div>
     </header>
 
+    <!-- Indexing status (TSK0019): rows commit while the scan continues; -->
+    <!-- cancel is operation-scoped, resume restarts the scan.            -->
+    <div
+      v-if="fileStore.hasFile && (indexing || indexState !== 'idle')"
+      class="px-4 py-2 border-b border-base-300 bg-base-200"
+    >
+      <LoadingPanel
+        v-if="indexing"
+        :source-name="fileStore.fileName"
+        :download="null"
+        :index="progress.index"
+        :cancellable="true"
+        @cancel="cancelIndex"
+      />
+      <div v-else-if="indexState === 'cancelled'" class="flex items-center justify-between gap-3 text-sm">
+        <span class="text-base-content/80">
+          Indexing was cancelled. Resume to index the file again.
+        </span>
+        <button class="btn btn-primary btn-sm" data-testid="index-resume" @click="resumeIndex">
+          Resume
+        </button>
+      </div>
+      <div v-else-if="indexState === 'failed'" role="alert" class="flex items-center justify-between gap-3 text-sm">
+        <span class="text-error">Indexing failed: {{ engineApi.indexError }}</span>
+        <button class="btn btn-primary btn-sm" data-testid="index-retry" @click="resumeIndex">
+          Retry
+        </button>
+      </div>
+    </div>
+
     <!-- Main content -->
     <main class="flex-1 flex overflow-hidden">
       <!-- Left panel - Row list -->
@@ -135,7 +182,7 @@ async function resetFile() {
         <!-- Status bar -->
         <div class="p-3 border-t border-base-300 bg-base-200 text-xs text-base-content/70">
           <div class="flex items-center justify-between">
-            <span>Total: <span class="font-mono">0</span> rows</span>
+            <span>Total: <span class="font-mono">{{ engineApi.totalRows }}</span> rows</span>
             <span>Filtered: <span class="font-mono">0</span> rows</span>
           </div>
         </div>

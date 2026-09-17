@@ -242,6 +242,10 @@ export class WorkerClient implements JsonlEngine {
 
   /** Drops the current source (worker-side) but keeps the worker alive. */
   async clearSource(): Promise<void> {
+    // Any in-flight RPC belongs to the outgoing source: it is stale the
+    // moment the dispose lands (same rule as a superseding init).
+    this.rejectPending(new SourceReplacedError())
+    this.initInFlight = false
     await this.postRequest<{ disposed: boolean }>({ type: 'dispose' })
     this.currentOperationId = null
   }

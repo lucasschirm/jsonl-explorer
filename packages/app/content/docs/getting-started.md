@@ -35,6 +35,14 @@ Custom headers are kept in memory only and are never:
 
 Headers that look like credentials (e.g. `Authorization`) are masked by default and flagged with a notice; duplicate, forbidden, or line-break-injecting header names are rejected with an inline error.
 
+## Loading and cancellation
+
+- While a URL is loading, the modal shows **download** and **indexing** progress separately: the download bar is determinate when the server declares a plain (uncompressed) size, otherwise indeterminate; the index shows the committed row count as it grows.
+- Local files are indexed in the background: you can enter the explorer immediately and rows appear as they are committed.
+- **Cancel** targets the active operation only (its operation id); stale progress events from a previous operation are dropped, so a cancel or restart can never surface outdated percentages.
+- After a cancelled or failed load you stay on landing with the form intact — retry in place.
+- If the local disk cache (OPFS) is unavailable or its quota is exceeded, you are asked before the download falls back to **memory-only** pages: the dialog explains the trade-off (higher RAM use, no disk persistence, data lost on tab close) and you can cancel instead.
+
 ## Supported Formats
 
 - **JSONL** (`.jsonl`, `.ndjson`) — One JSON object per line
