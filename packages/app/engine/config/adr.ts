@@ -313,7 +313,14 @@ export const CLI_CONFIG = {
  *
  * Sources:
  * - FileSource: structured-clone File/Blob, worker-owned slice()
- * - UrlSource: worker-owned fetch → OPFS spool → indexing
+ * - UrlSource: worker-owned fetch → OPFS spool (artifact `spool-<uuid>.jsonl`,
+ *   random per session) → indexing. OPFS artifacts are removed on dispose,
+ *   abort, and failure; stale `spool-*` artifacts are cleaned at worker
+ *   startup. When OPFS is unavailable or its quota is exhausted, the byte
+ *   stream falls back to fixed-size in-memory pages (256 KiB) WITHOUT
+ *   concatenating the response; large (> maxHandoverPayloadBytes) or
+ *   unknown-size responses require explicit user confirmation (the fallback
+ *   is never silent). A mid-stream OPFS quota failure re-fetches into RAM.
  * - MemorySource: UTF-8 encode string or transfer ArrayBuffer
  *
  * References: PLAN.md 4.2
@@ -329,6 +336,7 @@ export const ENGINE_DEFAULTS = {
   maxConcurrentFilterChunks: 4,
   rowPreviewByteLimit: 500, // bytes shown in row list
   largeRowDetailThreshold: 1 * 1024 * 1024, // 1 MiB
+  spoolPageSizeBytes: 256 * 1024, // 256 KiB pages for the in-memory URL fallback
 } as const
 
 // ============================================================================

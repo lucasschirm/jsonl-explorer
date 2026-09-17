@@ -28,6 +28,7 @@ import type {
   ExportNextRequest,
   ExportAckRequest,
   ExportCancelRequest,
+  UrlFallbackConfirmResponse,
   CancelRequest,
   DisposeRequest,
   ErrorCode,
@@ -38,6 +39,8 @@ import type {
   Generation,
 } from '@jsonl-explorer/shared'
 
+import { PROTOCOL_NAMESPACE, PROTOCOL_VERSION } from '@jsonl-explorer/shared'
+
 import {
   FileSource,
   MemorySource,
@@ -45,6 +48,14 @@ import {
   SourceDisposedError,
 } from '../engine/sources/index.js'
 import type { JsonlSource } from '../engine/sources/index.js'
+import {
+  FallbackDeclinedError,
+  SpoolQuotaExceededError,
+  SpoolSource,
+  UrlDownloader,
+  UrlFetchError,
+  cleanupStaleSpools,
+} from '../engine/spool/index.js'
 import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
 import type { ScanProgress } from '../engine/scanner.js'
 import { offsetToNumber } from '../engine/indexer.js'
@@ -69,109 +80,44 @@ export type {
 const PROGRESS_INTERVAL_ROWS = 1000
 
 // ============================================================================
-// Source Types
+// Source State
 // ============================================================================
 
-class UrlSource implements JsonlSource {
-  readonly name: string
-  private url: string
-  private headers: Record<string, string>
-  private opfsDir: FileSystemDirectoryHandle | null = null
-  private opfsFile: FileSystemFileHandle | null = null
-  private opfsWriter: FileSystemSyncAccessHandle | null = null
-  private size: number | null = null
-  private downloaded = false
+/**
+ * URL sources are spooled in the engine (`engine/spool`): `UrlDownloader`
+ * fetches and streams into an `OpfsSpool` (or a consented `PagedMemoryStore`
+ * fallback); the sealed spool is exposed to the engine as a `SpoolSource`.
+ * The download runs inside the `initUrl` RPC, so progress/consent events
+ * stream while the request is pending and `cancel` aborts the fetch.
+ */
+let activeInit: { operationId: string; controller: AbortController } | null = null
+let pendingFallbackConfirm: { operationId: string; resolve: (accept: boolean) => void } | null = null
 
-  constructor(url: string, headers: Record<string, string>) {
-    this.url = url
-    this.headers = headers
-    this.name = new URL(url).pathname.split('/').pop() || 'remote.jsonl'
+/** Resets worker-owned state before (re)initializing a source. */
+async function resetSourceState(): Promise<void> {
+  if (source) {
+    await source.dispose().catch(() => {})
+    source = null
   }
+  indexer = null
+  filterEngine = null
+  exportStates.clear()
+  currentGeneration = 0
+}
 
-  async readRange(offset: bigint | number, length: number): Promise<Uint8Array> {
-    await this.ensureDownloaded()
-    if (!this.opfsWriter) {
-      throw new Error('URL source memory fallback not implemented')
-    }
-    const at = Number(offset)
-    if (!Number.isSafeInteger(at)) {
-      throw new RangeError(`Unsupported read offset: ${offset}`)
-    }
-    const buffer = new Uint8Array(length)
-    const read = this.opfsWriter.read(buffer, { at })
-    return buffer.subarray(0, read)
-  }
-
-  async getSize(): Promise<bigint> {
-    if (this.size !== null) return BigInt(this.size)
-    await this.ensureDownloaded()
-    return BigInt(this.size ?? 0)
-  }
-
-  private async ensureDownloaded(): Promise<void> {
-    if (this.downloaded) return
-    this.downloaded = true
-
-    try {
-      const response = await fetch(this.url, {
-        headers: this.headers,
-        credentials: 'omit',
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      if ('storage' in navigator && 'getDirectory' in navigator.storage) {
-        try {
-          const opfsDir = await navigator.storage.getDirectory()
-          const fileName = `jsonl-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`
-          const opfsFile = await opfsDir.getFileHandle(fileName, { create: true })
-          const opfsWriter = await opfsFile.createSyncAccessHandle()
-
-          const reader = response.body?.getReader()
-          if (reader) {
-            let offset = 0
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              opfsWriter.write(value, { at: offset })
-              offset += value.length
-            }
-          }
-
-          this.opfsDir = opfsDir
-          this.opfsFile = opfsFile
-          this.opfsWriter = opfsWriter
-          this.size = opfsWriter.getSize()
-          return
-        } catch (opfsError) {
-          console.warn('OPFS unavailable, falling back to memory:', opfsError)
-        }
-      }
-
-      throw new Error('URL source requires OPFS for large files')
-    } catch (error) {
-      throw new Error(`Failed to download URL: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
-  async dispose(): Promise<void> {
-    if (this.opfsWriter) {
-      this.opfsWriter.close()
-      this.opfsWriter = null
-    }
-    if (this.opfsFile && this.opfsDir) {
-      try {
-        await this.opfsDir.removeEntry((await this.opfsFile).name)
-      } catch {
-        // Ignore cleanup errors
-      }
-      this.opfsFile = null
-      this.opfsDir = null
-    }
+/** Best-effort sweep of spool artifacts left behind by crashed sessions. */
+async function cleanupStaleSpoolsBestEffort(): Promise<void> {
+  const storage = navigator.storage
+  if (!storage || typeof storage.getDirectory !== 'function') return
+  try {
+    const root = await storage.getDirectory()
+    await cleanupStaleSpools(root)
+  } catch {
+    // OPFS unavailable or locked: nothing to clean.
   }
 }
+
+void cleanupStaleSpoolsBestEffort()
 
 // ============================================================================
 // Indexer
@@ -506,6 +452,13 @@ function createRequestId(): string {
 self.onmessage = async (event: MessageEvent) => {
   const request = event.data as WorkerRequest
 
+  // Fast path: answer a pending in-memory fallback consent while `initUrl`
+  // is still awaiting its download (concurrent handler invocations).
+  if (request.type === 'urlFallbackConfirm') {
+    handleUrlFallbackConfirm(request)
+    return
+  }
+
   try {
     switch (request.type) {
       case 'initFile': {
@@ -585,14 +538,26 @@ function errorToErrorCode(error: unknown): ErrorCode {
   if (error instanceof PayloadTooLargeError) return 'HANDOVER_PAYLOAD_TOO_LARGE'
   if (error instanceof SourceDisposedError) return 'SOURCE_NOT_INITIALIZED'
   if (error instanceof IndexAbortedError) return 'INDEXING_CANCELLED'
+  if (error instanceof UrlFetchError) return 'URL_FETCH_FAILED'
+  if (error instanceof FallbackDeclinedError) return 'URL_FALLBACK_DECLINED'
+  if (error instanceof SpoolQuotaExceededError) return 'OPFS_QUOTA_EXCEEDED'
+  if (error instanceof Error && error.name === 'AbortError') return 'CANCELLED'
   return 'UNKNOWN'
 }
 
+/** Resolves the pending `urlFallbackConfirm` waiter, if the ID matches. */
+function handleUrlFallbackConfirm(request: UrlFallbackConfirmResponse): void {
+  const pending = pendingFallbackConfirm
+  if (!pending || pending.operationId !== request.operationId) return
+  pendingFallbackConfirm = null
+  pending.resolve(request.accept)
+}
+
 async function handleInitFile(request: InitFileRequest): Promise<void> {
+  await resetSourceState()
   source = new FileSource(request.file)
   indexer = new Indexer(source)
   filterEngine = new FilterEngine(indexer, source)
-  currentGeneration = 0
 
   const response = createSuccessResponse(request.requestId, {
     name: request.file.name,
@@ -603,24 +568,63 @@ async function handleInitFile(request: InitFileRequest): Promise<void> {
 }
 
 async function handleInitUrl(request: InitUrlRequest): Promise<void> {
-  source = new UrlSource(request.url, request.headers || {})
-  indexer = new Indexer(source)
-  filterEngine = new FilterEngine(indexer, source)
-  currentGeneration = 0
-
-  const response = createSuccessResponse(request.requestId, {
-    name: source.name,
-    size: 0,
-    type: 'url',
+  await resetSourceState()
+  const controller = new AbortController()
+  activeInit = { operationId: request.operationId, controller }
+  const downloader = new UrlDownloader({
+    headers: request.headers,
+    signal: controller.signal,
+    onProgress: (progress) => {
+      self.postMessage({
+        ns: PROTOCOL_NAMESPACE,
+        v: PROTOCOL_VERSION,
+        type: 'urlProgress',
+        operationId: request.operationId,
+        receivedBytes: progress.receivedBytes,
+        totalBytes: progress.totalBytes,
+      })
+    },
+    onFallbackRequest: async (info) => {
+      self.postMessage({
+        ns: PROTOCOL_NAMESPACE,
+        v: PROTOCOL_VERSION,
+        type: 'urlFallbackConfirm',
+        operationId: request.operationId,
+        url: request.url,
+        declaredBytes: info.declaredBytes,
+        reason: info.reason,
+      })
+      return await new Promise<boolean>((resolve) => {
+        pendingFallbackConfirm = { operationId: request.operationId, resolve }
+      })
+    },
   })
-  self.postMessage(response)
+  try {
+    const result = await downloader.download(request.url)
+    source = new SpoolSource(result.name, result.spool)
+    indexer = new Indexer(source)
+    filterEngine = new FilterEngine(indexer, source)
+
+    const size = await result.spool.getSize()
+    const response = createSuccessResponse(request.requestId, {
+      name: result.name,
+      size: Number(size),
+      type: 'url',
+    })
+    self.postMessage(response)
+  } finally {
+    activeInit = null
+    if (pendingFallbackConfirm?.operationId === request.operationId) {
+      pendingFallbackConfirm = null
+    }
+  }
 }
 
 async function handleInitMemory(request: InitMemoryRequest): Promise<void> {
+  await resetSourceState()
   source = new MemorySource(request.name, request.payload)
   indexer = new Indexer(source)
   filterEngine = new FilterEngine(indexer, source)
-  currentGeneration = 0
 
   const size = await source.getSize()
   const response = createSuccessResponse(request.requestId, {
@@ -875,6 +879,9 @@ async function handleExportCancel(request: ExportCancelRequest): Promise<void> {
 async function handleCancel(request: CancelRequest): Promise<void> {
   // Cancellation is operation-scoped: in-flight index/filter runs observe the
   // abort on their next chunk/row boundary and reject with typed errors.
+  if (activeInit && activeInit.operationId === request.operationId) {
+    activeInit.controller.abort()
+  }
   indexer?.cancel()
   filterEngine?.cancel()
   const response = createSuccessResponse(request.requestId, {})
@@ -882,14 +889,8 @@ async function handleCancel(request: CancelRequest): Promise<void> {
 }
 
 async function handleDispose(request: DisposeRequest): Promise<void> {
-  if (source) {
-    await source.dispose()
-    source = null
-  }
-  indexer = null
-  filterEngine = null
-  exportStates.clear()
-  currentGeneration = 0
+  await resetSourceState()
+  await cleanupStaleSpoolsBestEffort()
 
   const response = createSuccessResponse(request.requestId, { disposed: true })
   self.postMessage(response)

@@ -6,6 +6,6 @@
       "~/engine": ["engine/index"]
     }
   },
-  "include": ["tests/**/*.ts"],
+  "include": ["tests/**/*.ts", "types/**/*.d.ts"],
   "exclude": ["node_modules", "dist", ".output"]
 }

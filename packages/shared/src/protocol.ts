@@ -82,6 +82,7 @@ export const ErrorCode = {
   URL_INVALID_HEADERS: 'URL_INVALID_HEADERS',
   URL_REDIRECT_DENIED: 'URL_REDIRECT_DENIED',
   URL_QUOTA_EXCEEDED: 'URL_QUOTA_EXCEEDED',
+  URL_FALLBACK_DECLINED: 'URL_FALLBACK_DECLINED',
 } as const
 
 export type ErrorCode = typeof ErrorCode[keyof typeof ErrorCode]
@@ -164,6 +165,44 @@ export interface InitUrlRequest extends OperationRequest {
   type: 'initUrl'
   url: string
   headers?: Record<string, string>
+}
+
+/**
+ * Worker → main-thread event: the OPFS spool could not be used (unavailable
+ * or quota) and the byte stream would fall back to fixed-size in-memory
+ * pages. Sent for large or unknown-size responses; the main thread shows a
+ * consent dialog and answers with a `UrlFallbackConfirmResponse`.
+ */
+export interface UrlFallbackConfirmRequest {
+  ns: typeof PROTOCOL_NAMESPACE
+  v: typeof PROTOCOL_VERSION
+  type: 'urlFallbackConfirm'
+  operationId: string
+  url: string
+  /** Content-Length in decoded bytes, when the response declared it unencoded. */
+  declaredBytes?: number
+  reason: 'opfs-unavailable' | 'opfs-quota-exceeded' | 'declared-size-over-quota'
+}
+
+/** Main-thread → worker: user decision for a pending `urlFallbackConfirm` event. */
+export interface UrlFallbackConfirmResponse extends BaseRequest {
+  type: 'urlFallbackConfirm'
+  operationId: string
+  accept: boolean
+}
+
+/**
+ * Worker → main-thread event: URL download progress. `totalBytes` is only
+ * present when the response declared an unencoded Content-Length (R12);
+ * compressed or unknown-size responses report indeterminate progress.
+ */
+export interface UrlProgressEvent {
+  ns: typeof PROTOCOL_NAMESPACE
+  v: typeof PROTOCOL_VERSION
+  type: 'urlProgress'
+  operationId: string
+  receivedBytes: number
+  totalBytes?: number
 }
 
 export interface InitMemoryRequest extends OperationRequest {
@@ -425,6 +464,7 @@ export type WorkerRequest =
   | ExportNextRequest
   | ExportAckRequest
   | ExportCancelRequest
+  | UrlFallbackConfirmResponse
   | CancelRequest
   | DisposeRequest
 
@@ -446,6 +486,8 @@ export type WorkerEvent =
   | IndexCompleteEvent
   | FilterProgressEvent
   | FilterCompleteEvent
+  | UrlProgressEvent
+  | UrlFallbackConfirmRequest
 
 // ============================================================================
 // Type Guards / Validators
