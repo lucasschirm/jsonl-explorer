@@ -37,7 +37,7 @@ export const useFilterStore = defineStore('filter', () => {
   const status = ref<FilterStatus>('idle')
   const error = ref<string | null>(null)
   const result = ref<FilterResult | null>(null)
-  const progress = ref<{ scannedRows: number; matchedRows: number } | null>(null)
+  const progress = ref<{ scannedRows: number; matchedRows: number; totalRows: number } | null>(null)
   let unsubscribeProgress: (() => void) | null = null
 
   const matchedRows = computed(() => result.value?.matchedRows ?? 0)
@@ -46,6 +46,12 @@ export const useFilterStore = defineStore('filter', () => {
   const isRunning = computed(() => status.value === 'running')
   /** True while `result` covers only the committed snapshot (indexing live). */
   const isPartial = computed(() => result.value?.partial ?? false)
+  /** Rows skipped by the current result (invalid JSON / jq runtime). */
+  const errorCount = computed(() => result.value?.errorCount ?? 0)
+  /** One-line summary of the first row error, if rows were skipped. */
+  const errorSummary = computed(() => result.value?.errorSummary ?? null)
+  /** True when a filter view is active (any result exists). */
+  const hasActiveFilter = computed(() => result.value !== null)
 
   // Completion reruns have no RPC in flight: the worker emits
   // filterComplete after rerunning the latest query at index completion.
@@ -60,6 +66,8 @@ export const useFilterStore = defineStore('filter', () => {
       totalRows: event.totalRows,
       generation: event.generation,
       partial: event.partial,
+      errorCount: event.errorCount,
+      errorSummary: event.errorSummary,
     }
     if (status.value === 'running') {
       status.value = 'idle'
@@ -70,7 +78,11 @@ export const useFilterStore = defineStore('filter', () => {
     unsubscribeProgress?.()
     unsubscribeProgress = engineApi.getEngine().onProgress((event) => {
       if (event.type === 'filterProgress' && event.operationId === operationId) {
-        progress.value = { scannedRows: event.scannedRows, matchedRows: event.matchedRows }
+        progress.value = {
+          scannedRows: event.scannedRows,
+          matchedRows: event.matchedRows,
+          totalRows: event.totalRows,
+        }
       }
     })
   }
@@ -120,6 +132,35 @@ export const useFilterStore = defineStore('filter', () => {
     }
   }
 
+  /**
+   * Resets to the unfiltered (identity) view (TSK0028): the worker drops
+   * its filter state and bumps the generation, so stale row caches
+   * invalidate and selection transitions run deterministically.
+   *
+   * A no-op when no filter is active; the query is only cleared on
+   * success so a failed clear keeps the last query for a retry.
+   */
+  async function clearFilter(): Promise<void> {
+    if (status.value === 'running') return
+    if (result.value === null) {
+      query.value = ''
+      return
+    }
+    status.value = 'running'
+    error.value = null
+    const operationId = nextFilterOperationId()
+    try {
+      const cleared = await engineApi.getEngine().clearFilter({ operationId })
+      result.value = cleared
+      query.value = ''
+      status.value = 'idle'
+    } catch (err) {
+      status.value = 'error'
+      error.value = err instanceof Error ? err.message : 'Clear filter failed'
+      throw err
+    }
+  }
+
   /** Drops stale filter state (called when the source changes). */
   function resetFilterState(): void {
     kind.value = 'text'
@@ -142,8 +183,12 @@ export const useFilterStore = defineStore('filter', () => {
     generation,
     isRunning,
     isPartial,
+    errorCount,
+    errorSummary,
+    hasActiveFilter,
     runFilter,
     cancelFilter,
+    clearFilter,
     resetFilterState,
   }
 })

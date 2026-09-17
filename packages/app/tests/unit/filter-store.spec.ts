@@ -194,3 +194,108 @@ describe('filter store result lifecycle (TSK0026)', () => {
     expect(filterStore.status).toBe('idle')
   })
 })
+
+describe('filter store: clear + row-error summary (TSK0028)', () => {
+  it('clearFilter drops the view: RPC, match-all result, empty query', async () => {
+    const worker = new FakeWorker()
+    injectWorker(worker)
+    await openFile(worker)
+    const filterStore = useFilterStore()
+
+    const pending = filterStore.runFilter('hello', 'text')
+    answerLast(worker, { matchedRows: 2, totalRows: 10, generation: 1, partial: false })
+    await pending
+    expect(filterStore.hasActiveFilter).toBe(true)
+
+    const clearPending = filterStore.clearFilter()
+    const clearMsg = worker.posted.at(-1) as { type: string }
+    expect(clearMsg.type).toBe('clearFilter')
+    answerLast(worker, { matchedRows: 10, totalRows: 10, generation: 2, partial: false })
+    await clearPending
+
+    expect(filterStore.result).toEqual({ matchedRows: 10, totalRows: 10, generation: 2, partial: false })
+    expect(filterStore.query).toBe('')
+    expect(filterStore.status).toBe('idle')
+    expect(filterStore.error).toBeNull()
+  })
+
+  it('clearFilter is a no-op RPC-wise when no filter is active', async () => {
+    const worker = new FakeWorker()
+    injectWorker(worker)
+    await openFile(worker)
+    const filterStore = useFilterStore()
+    const postedBefore = worker.posted.length
+
+    await filterStore.clearFilter()
+
+    expect(worker.posted.length).toBe(postedBefore)
+    expect(filterStore.query).toBe('')
+    expect(filterStore.status).toBe('idle')
+  })
+
+  it('a failed clear keeps the last query (retryable) and sets error', async () => {
+    const worker = new FakeWorker()
+    injectWorker(worker)
+    await openFile(worker)
+    const filterStore = useFilterStore()
+
+    const pending = filterStore.runFilter('hello', 'text')
+    answerLast(worker, { matchedRows: 2, totalRows: 10, generation: 1, partial: false })
+    await pending
+
+    const clearPending = filterStore.clearFilter()
+    failLast(worker, 'FILTER_FAILED', 'clear failed')
+    await expect(clearPending).rejects.toThrow('clear failed')
+    expect(filterStore.query).toBe('hello')
+    expect(filterStore.status).toBe('error')
+    expect(filterStore.error).toBe('clear failed')
+    // The previous (filtered) view survives a failed clear.
+    expect(filterStore.result).toEqual({ matchedRows: 2, totalRows: 10, generation: 1, partial: false })
+  })
+
+  it('exposes row-error count and one-line summary from the result', async () => {
+    const worker = new FakeWorker()
+    injectWorker(worker)
+    await openFile(worker)
+    const filterStore = useFilterStore()
+
+    const pending = filterStore.runFilter('.x', 'jq')
+    answerLast(worker, {
+      matchedRows: 1,
+      totalRows: 4,
+      generation: 1,
+      partial: false,
+      errorCount: 3,
+      errorSummary: 'jq: error (at <stdin>:2): Cannot index string with number',
+    })
+    await pending
+
+    expect(filterStore.errorCount).toBe(3)
+    expect(filterStore.errorSummary).toBe('jq: error (at <stdin>:2): Cannot index string with number')
+    expect(filterStore.error).toBeNull() // row errors are NOT operation failures
+    expect(filterStore.status).toBe('idle')
+  })
+
+  it('filterComplete reruns propagate the row-error summary', async () => {
+    const worker = new FakeWorker()
+    injectWorker(worker)
+    await openFile(worker)
+    const filterStore = useFilterStore()
+
+    worker.emit({
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'filterComplete',
+      operationId: 'filter-rerun-2',
+      matchedRows: 5,
+      totalRows: 100,
+      durationMs: 2,
+      errorCount: 1,
+      errorSummary: 'invalid JSON near line 42',
+      generation: 2,
+      partial: false,
+    })
+    expect(filterStore.errorCount).toBe(1)
+    expect(filterStore.errorSummary).toBe('invalid JSON near line 42')
+  })
+})

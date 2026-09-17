@@ -130,7 +130,7 @@ describe('StatusBar (TSK0023)', () => {
 
     const filterStore = useFilterStore()
     filterStore.status = 'running'
-    filterStore.progress = { scannedRows: 1200, matchedRows: 34 }
+    filterStore.progress = { scannedRows: 1200, matchedRows: 34, totalRows: 5000 }
     await nextTick()
     expect(text('state-text')).toBe('Filtering… 1,200 scanned, 34 matched')
     expect(text('filtered-count')).toBe('5')

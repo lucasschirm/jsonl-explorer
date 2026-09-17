@@ -78,7 +78,18 @@ export interface FilterScanResult {
   /** True when only the committed snapshot was scanned (indexing live). */
   partial: boolean
   durationMs: number
+  /** Rows skipped due to row-level errors (invalid JSON / jq runtime). */
   errorCount: number
+  /** One-line summary of the first row error (never a per-row list). */
+  errorSummary?: string
+}
+
+/** Scan scratch space: the match index plus error accounting. */
+interface ScanBuffer {
+  rows: Uint32Array
+  count: number
+  errors: number
+  firstError: string | null
 }
 
 interface FilterState {
@@ -176,6 +187,22 @@ export class FilterEngine {
     this.state.operationId = operationId
   }
 
+  /**
+   * Drops the filter view: the identity mapping is restored and any
+   * in-flight scan is aborted (its token no longer matches, so its
+   * atomic swap is skipped and it surfaces as a cancel).
+   */
+  clear(): void {
+    this.scanToken += 1
+    this.state.cancelled = false
+    this.state.kind = 'text'
+    this.state.query = ''
+    this.state.jqProgram = null
+    this.state.matchedRows = new Uint32Array(0)
+    this.state.matchedCount = 0
+    this.hasFilter = false
+  }
+
   /** Cooperative cancel: the in-flight scan aborts at its next row check. */
   cancel(): void {
     this.state.cancelled = true
@@ -210,10 +237,11 @@ export class FilterEngine {
     const totalRows = this.indexer.getCommittedRows()
     const partial = !this.isIndexComplete()
     const startedAt = performance.now()
-    const buffer: { rows: Uint32Array; count: number; errors: number } = {
+    const buffer: ScanBuffer = {
       rows: new Uint32Array(1024),
       count: 0,
       errors: 0,
+      firstError: null,
     }
     if (kind === 'jq') {
       jqProgram = await this.compileJq(query)
@@ -234,6 +262,7 @@ export class FilterEngine {
       partial,
       durationMs: Math.round(performance.now() - startedAt),
       errorCount: buffer.errors,
+      errorSummary: buffer.firstError ?? undefined,
     }
   }
 
@@ -242,7 +271,7 @@ export class FilterEngine {
     token: number,
     query: string,
     totalRows: number,
-    buffer: { rows: Uint32Array; count: number; errors: number },
+    buffer: ScanBuffer,
   ): Promise<void> {
     for (let i = 0; i < totalRows; i++) {
       if (token !== this.scanToken || this.state.cancelled) {
@@ -269,7 +298,7 @@ export class FilterEngine {
     token: number,
     program: string,
     totalRows: number,
-    buffer: { rows: Uint32Array; count: number; errors: number },
+    buffer: ScanBuffer,
   ): Promise<void> {
     const isAborted = () => token !== this.scanToken || this.state.cancelled
     let i = 0
@@ -299,6 +328,9 @@ export class FilterEngine {
         if (result.verdicts[k] === true) this.addMatch(buffer, i + k)
       }
       buffer.errors += result.errorCount
+      if (result.firstError !== undefined && buffer.firstError === null) {
+        buffer.firstError = result.firstError
+      }
       i = end
       if (this.state.operationId && this.shouldEmitProgress()) {
         this.emitProgress(end, buffer.count, totalRows)

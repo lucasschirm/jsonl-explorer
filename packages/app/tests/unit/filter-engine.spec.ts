@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, type Mock } from 'vitest'
 import { FilterEngine, FilterCancelledError } from '../../engine/filter'
 import type { FilterIndexerLike, FilterSourceLike } from '../../engine/filter'
+import type { JqRuntimeLike } from '../../engine/jq'
 import type { FilterProgressEvent } from '@jsonl-explorer/shared'
 
 const enc = new TextEncoder()
@@ -380,5 +381,116 @@ describe('FilterEngine progress events (TSK0026)', () => {
     const { engine, events } = makeEngine(rows)
     await engine.filter('text', '"i":')
     expect(events).toHaveLength(0)
+  })
+})
+
+describe('FilterEngine jq row-error summary + clear (TSK0028)', () => {
+  /**
+   * Fake jq backend: rows that parse as JSON match (verdict true), invalid
+   * JSON is a row error. The first error text is recorded, exactly like the
+   * real backend's `firstError`.
+   */
+  function makeFakeJq() {
+    return {
+      compile: async (query: string) => `prog:${query}`,
+      runVerdicts: async (program: string, rows: string[]) => {
+        const verdicts = rows.map((row) => {
+          try {
+            JSON.parse(row)
+            return true
+          } catch {
+            return false
+          }
+        })
+        const errorCount = rows.length - verdicts.filter(Boolean).length
+        let firstError: string | undefined
+        for (const row of rows) {
+          try {
+            JSON.parse(row)
+          } catch (e) {
+            firstError ??= `Invalid JSON: ${e instanceof Error ? e.message : String(e)}`
+            break
+          }
+        }
+        return { verdicts, errorCount, firstError }
+      },
+    } satisfies JqRuntimeLike
+  }
+
+  function makeJqEngine(rows: string[], opts: { readDelayMs?: number } = {}) {
+    const layout = makeLayout(rows)
+    const readRange = async (start: number, length: number) => {
+      if (opts.readDelayMs) await new Promise((r) => setTimeout(r, opts.readDelayMs))
+      return layout.bytes.slice(start, start + length)
+    }
+    const engine = new FilterEngine(layout.indexer, { readRange }, {
+      postEvent: () => {},
+      getEditOverride: () => null,
+      isIndexComplete: () => true,
+      jq: makeFakeJq(),
+    })
+    return { engine, layout }
+  }
+
+  it('counts row errors and surfaces ONE first-error summary', async () => {
+    const rows = ['{"n":1}', 'not json', '{"n":2}', 'still broken', '{"n":3}']
+    const { engine } = makeJqEngine(rows)
+
+    const res = await engine.filter('jq', '.n')
+    expect(res.matchedRows).toBe(3)
+    expect(res.totalRows).toBe(5)
+    expect(res.errorCount).toBe(2)
+    expect(typeof res.errorSummary).toBe('string')
+    expect(res.errorSummary).toContain('not json') // the FIRST error, not all of them
+  })
+
+  it('a clean scan has no error summary', async () => {
+    const rows = ['{"n":1}', '{"n":2}']
+    const { engine } = makeJqEngine(rows)
+
+    const res = await engine.filter('jq', '.n')
+    expect(res.errorCount).toBe(0)
+    expect(res.errorSummary).toBeUndefined()
+  })
+
+  it('clear() restores the identity view after a filter', async () => {
+    const rows = ['a', 'b', 'a', 'c']
+    const { engine } = makeEngine(rows)
+
+    const res = await engine.filter('text', 'a')
+    expect(res.matchedRows).toBe(2)
+    expect(engine.isFiltered()).toBe(true)
+
+    engine.clear()
+    expect(engine.isFiltered()).toBe(false)
+    expect(engine.matchCount()).toBe(4) // match-all: every committed row
+    for (let i = 0; i < 4; i++) expect(engine.rowAt(i)).toBe(i)
+    for (let lineId = 1; lineId <= 4; lineId++) expect(engine.positionOfLine(lineId)).toBe(lineId - 1)
+    expect(engine.positionOfLine(5)).toBeNull()
+    expect(engine.hasActiveQuery()).toBe(false)
+    expect(engine.getActiveQuery()).toBeNull()
+
+    // A fresh filter after the clear works normally.
+    const again = await engine.filter('text', 'b')
+    expect(again.matchedRows).toBe(1)
+    expect(engine.rowAt(0)).toBe(1)
+  })
+
+  it('clear() aborts an in-flight scan; its swap never lands', async () => {
+    const rows = Array.from({ length: 1500 }, (_, i) => (i % 3 === 0 ? 'x' : 'y'))
+    const { engine } = makeJqEngine(rows, { readDelayMs: 0.5 })
+
+    // A text scan is in flight (no filter has completed yet).
+    const pending = engine.filter('text', 'x')
+    const rejected = expect(pending).rejects.toThrow(FilterCancelledError)
+    await new Promise((r) => setTimeout(r, 5)) // let the scan start
+    engine.clear()
+    await rejected
+
+    // Identity view published; the aborted scan cannot swap in later.
+    expect(engine.isFiltered()).toBe(false)
+    expect(engine.matchCount()).toBe(1500)
+    expect(engine.rowAt(0)).toBe(0)
+    expect(engine.positionOfLine(1)).toBe(0)
   })
 })

@@ -289,6 +289,14 @@ export interface FilterRequest extends OperationRequest {
   query: string
 }
 
+/**
+ * Drops the active filter view (if any) and returns to the identity view.
+ * Bumps the generation like a filter, so stale row caches invalidate.
+ */
+export interface ClearFilterRequest extends OperationRequest {
+  type: 'clearFilter'
+}
+
 export interface FilterProgressEvent extends BaseProgressEvent {
   ns: typeof PROTOCOL_NAMESPACE
   v: typeof PROTOCOL_VERSION
@@ -336,6 +344,10 @@ export interface FilterResult {
    * indexing completes and announces it with a `filterComplete` event.
    */
   partial: boolean
+  /** Rows skipped due to row-level errors (invalid JSON / jq runtime). */
+  errorCount?: number
+  /** One-line summary of the first row error (never a per-row list). */
+  errorSummary?: string
 }
 
 // ============================================================================
@@ -524,6 +536,7 @@ export type WorkerRequest =
   | InitRequest
   | IndexRequest
   | FilterRequest
+  | ClearFilterRequest
   | GetRowsRequest
   | GetLineRequest
   | LinePositionRequest
@@ -658,6 +671,8 @@ export interface JsonlEngine {
   initMemory(name: string, payload: string | ArrayBuffer): Promise<InitResult>
   index(options?: { operationId: string }): Promise<void>
   filter(options: { operationId: string; kind: 'text' | 'jq'; query: string }): Promise<FilterResult>
+  /** Drops the active filter view; resolves to a match-all result. */
+  clearFilter(options: { operationId: string }): Promise<FilterResult>
   getRows(options: { start: number; count: number; generation: number }): Promise<{ rows: RowData[]; generation: number; totalFiltered: number }>
   getLine(lineId: number): Promise<{ lineId: number; text: string; isEdited: boolean }>
   /**

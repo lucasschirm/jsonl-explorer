@@ -189,6 +189,14 @@ export class WorkerClient implements JsonlEngine {
     })
   }
 
+  async clearFilter(options: { operationId: string }): Promise<FilterResult> {
+    this.currentOperationId = options.operationId
+    return await this.postRequest<FilterResult>({
+      type: 'clearFilter',
+      operationId: options.operationId,
+    })
+  }
+
   async getRows(options: { start: number; count: number; generation: number }): Promise<{
     rows: RowData[]
     generation: number

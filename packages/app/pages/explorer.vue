@@ -10,6 +10,7 @@ import LoadingPanel from '~/components/loading/LoadingPanel.vue'
 import RowList from '~/components/explorer/RowList.vue'
 import StatusBar from '~/components/explorer/StatusBar.vue'
 import DetailPanel from '~/components/explorer/DetailPanel.vue'
+import FilterBar from '~/components/explorer/FilterBar.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -79,14 +80,6 @@ onMounted(async () => {
     await router.push('/')
   }
 })
-
-function onSearch() {
-  toastStore.info('Search functionality coming soon', 'Not implemented')
-}
-
-function clearSearch() {
-  toastStore.info('Search cleared', 'Search')
-}
 
 /**
  * "Upload another file": fully dispose the engine (worker, spool, caches)
@@ -164,32 +157,8 @@ async function resetFile() {
     <main class="flex-1 flex overflow-hidden">
       <!-- Left panel - Row list -->
       <aside class="w-96 border-r border-base-300 flex flex-col overflow-hidden bg-base-100">
-        <!-- Search bar -->
-        <div class="p-3 border-b border-base-300 bg-base-200">
-          <div class="flex items-center gap-2">
-            <label for="search-input" class="sr-only">Search</label>
-            <svg class="w-5 h-5 text-base-content/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              id="search-input"
-              type="text"
-              class="input input-bordered flex-1"
-              placeholder="Search (Enter to filter)..."
-              @keyup.enter="onSearch"
-            />
-            <button class="btn btn-ghost btn-sm" @click="onSearch" title="Search">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </button>
-            <button class="btn btn-ghost btn-sm" @click="clearSearch" title="Clear search">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-        </div>
+        <!-- Filter bar (TSK0028): literal text + jq, explicit run only. -->
+        <FilterBar />
 
         <!-- Row list (TSK0022): virtualized, batched windows, bounded DOM -->
         <RowList />

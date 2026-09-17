@@ -21,6 +21,8 @@ interface Envelope {
   totalRows?: number
   generation?: number
   partial?: boolean
+  errorCount?: number
+  errorSummary?: string
 }
 
 let postSpy: ReturnType<typeof vi.fn>
@@ -296,5 +298,105 @@ describe('jsonl.worker jq filter (TSK0027)', () => {
     expect(res.ok).toBe(false)
     expect(res.error?.code).toBe('FILTER_FAILED')
     expect(res.error?.message).toContain('syntax error')
+  })
+})
+
+describe('jsonl.worker clearFilter + row-error summary (TSK0028)', () => {
+  const ROWS = ['{"a":"hello world"}', '{"b":"no match here"}', '{"c":"hello again"}', '', '{"e":"Hello"}']
+
+  it('clearFilter restores the identity view (match-all, generation bump)', async () => {
+    const content = ROWS.map((r) => r + '\n').join('')
+    await initFileAndIndex('clr.jsonl', content) // generation 1
+
+    await postFilter('r-f1', 'op-f1', 'text', 'hello')
+    const res = await waitForResponse('r-f1')
+    const value = res.value as { matchedRows: number; generation: number }
+    expect(value.matchedRows).toBe(2)
+    expect(value.generation).toBe(2)
+
+    // A non-matching row is invisible while the filter is active...
+    post({ requestId: 'r-pos1', operationId: 'op-pos1', type: 'linePosition', lineId: 2 })
+    const hidden = await waitForResponse('r-pos1')
+    expect((hidden.value as { visible: boolean }).visible).toBe(false)
+
+    // ...and visible again after the clear.
+    post({ requestId: 'r-clear', operationId: 'op-clear', type: 'clearFilter' })
+    const clearRes = await waitForResponse('r-clear')
+    expect(clearRes.ok).toBe(true)
+    const clear = clearRes.value as { matchedRows: number; totalRows: number; generation: number; partial: boolean }
+    expect(clear.matchedRows).toBe(5)
+    expect(clear.totalRows).toBe(5)
+    expect(clear.partial).toBe(false)
+    expect(clear.generation).toBe(3)
+
+    post({ requestId: 'r-pos2', operationId: 'op-pos2', type: 'linePosition', lineId: 2 })
+    const shown = await waitForResponse('r-pos2')
+    expect((shown.value as { visible: boolean; displayIndex: number | null }).visible).toBe(true)
+    expect((shown.value as { displayIndex: number | null }).displayIndex).toBe(1)
+
+    const rows = await getRowsValue(clear.generation)
+    expect(rows.totalFiltered).toBe(5)
+    expect(rows.rows.map((r) => r.lineId)).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('clearFilter aborts the in-flight scan; its result cannot swap in after', async () => {
+    const payload = Array.from({ length: 40000 }, (_, i) => (i % 2 === 0 ? '{"t":"x"}\n' : '{"t":"y"}\n')).join('')
+    await initMemoryOnly('clr2.jsonl', payload)
+    await indexNow() // generation 2
+
+    await postFilter('r-f1', 'op-f1', 'text', 'x')
+    // The scan is in flight: the clear must preempt it deterministically.
+    post({ requestId: 'r-clear', operationId: 'op-clear', type: 'clearFilter' })
+    const clearRes = await waitForResponse('r-clear')
+    expect(clearRes.ok).toBe(true)
+    const clear = clearRes.value as { matchedRows: number; generation: number; partial: boolean }
+    expect(clear.matchedRows).toBe(40000)
+    expect(clear.partial).toBe(false)
+
+    // The superseded scan surfaces as a cancel, never a late result.
+    const filterRes = await waitForResponse('r-f1')
+    expect(filterRes.ok).toBe(false)
+    expect(filterRes.error?.code).toBe('FILTER_CANCELLED')
+
+    const rows = await getRowsValue(clear.generation)
+    expect(rows.totalFiltered).toBe(40000)
+    expect(rows.rows[0]!.lineId).toBe(1)
+  })
+
+  it('jq row errors are counted and summarized ONCE in the response', async () => {
+    const rows = ['{"n":1}', 'not json', '{"n":2}', 'still not json', '{"n":3}']
+    await initMemoryOnly('errs.jsonl', rows.map((r) => r + '\n').join(''))
+    await indexNow()
+
+    await postFilter('r-f1', 'op-f1', 'jq', '.n')
+    const res = await waitForResponse('r-f1')
+    expect(res.ok).toBe(true)
+    const value = res.value as { matchedRows: number; errorCount?: number; errorSummary?: string }
+    expect(value.matchedRows).toBe(3)
+    expect(value.errorCount).toBe(2)
+    expect(typeof value.errorSummary).toBe('string')
+    expect((value.errorSummary ?? '').length).toBeGreaterThan(0)
+  })
+
+  it('filterComplete after indexing carries the row-error summary', async () => {
+    const lines = Array.from({ length: 1000 }, (_, i) => `{"n":${i}}`)
+    lines[10] = 'not json'
+    lines[20] = 'also broken'
+    await initMemoryOnly('errpart.jsonl', lines.map((l) => l + '\n').join(''))
+
+    // Filter over the empty committed snapshot (partial).
+    await postFilter('r-f1', 'op-f1', 'jq', '.n')
+    const partialRes = await waitForResponse('r-f1')
+    const partial = partialRes.value as { partial: boolean; errorCount?: number }
+    expect(partial.partial).toBe(true)
+    expect(partial.errorCount ?? 0).toBe(0)
+
+    await indexNow()
+    const complete = await waitForEvent('filterComplete')
+    expect(complete.matchedRows).toBe(998) // 1000 rows minus the 2 invalid ones
+    expect(complete.partial).toBe(false)
+    expect(complete.errorCount).toBe(2)
+    expect(typeof complete.errorSummary).toBe('string')
+    expect((complete.errorSummary ?? '').length).toBeGreaterThan(0)
   })
 })

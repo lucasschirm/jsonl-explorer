@@ -21,6 +21,7 @@ import type {
   InitMemoryRequest,
   IndexRequest,
   FilterRequest,
+  ClearFilterRequest,
   GetRowsRequest,
   GetLineRequest,
   LinePositionRequest,
@@ -398,6 +399,9 @@ async function maybeRerunFilter(): Promise<void> {
     const result = await engine.filter(active.kind, active.query)
     // The source was replaced mid-scan: the result is stale; drop it.
     if (filterEngine !== engine || source !== sourceRef) return
+    // A clearFilter may have landed right after the scan's swap: the
+    // cleared identity view must win — drop the stale rerun result.
+    if (!engine.getActiveQuery()) return
     currentGeneration++
     self.postMessage({
       ns: PROTOCOL_NAMESPACE,
@@ -408,6 +412,7 @@ async function maybeRerunFilter(): Promise<void> {
       totalRows: result.totalRows,
       durationMs: result.durationMs,
       errorCount: result.errorCount,
+      errorSummary: result.errorSummary,
       generation: currentGeneration,
       partial: result.partial,
     })
@@ -470,6 +475,10 @@ self.onmessage = async (event: MessageEvent) => {
       }
       case 'filter': {
         await handleFilter(request)
+        break
+      }
+      case 'clearFilter': {
+        await handleClearFilter(request)
         break
       }
       case 'getRows': {
@@ -752,6 +761,8 @@ async function handleFilter(request: FilterRequest): Promise<void> {
       totalRows: result.totalRows,
       generation: currentGeneration,
       partial: result.partial,
+      errorCount: result.errorCount,
+      errorSummary: result.errorSummary,
     })
     self.postMessage(response)
   } catch (error) {
@@ -760,6 +771,35 @@ async function handleFilter(request: FilterRequest): Promise<void> {
     const response = createErrorResponse(request.requestId, code, error instanceof Error ? error.message : String(error))
     self.postMessage(response)
   }
+}
+
+/**
+ * Drops the filter view (TSK0028): the identity mapping returns and the
+ * generation bumps so stale row caches invalidate. An in-flight scan is
+ * aborted first — its token no longer matches, so it cannot swap its
+ * result in after the clear (it surfaces as a cancel, not an error).
+ */
+async function handleClearFilter(request: ClearFilterRequest): Promise<void> {
+  if (!filterEngine) {
+    const response = createErrorResponse(request.requestId, 'SOURCE_NOT_INITIALIZED', 'Source not initialized')
+    self.postMessage(response)
+    return
+  }
+
+  filterEngine.cancel()
+  filterEngine.clear()
+  currentGeneration++
+
+  // With no filter, matchCount() is the committed row total: the
+  // match-all result the main thread adopts for the unfiltered view.
+  const totalRows = filterEngine.matchCount()
+  const response = createSuccessResponse(request.requestId, {
+    matchedRows: totalRows,
+    totalRows,
+    generation: currentGeneration,
+    partial: !indexComplete,
+  })
+  self.postMessage(response)
 }
 
 async function handleGetRows(request: GetRowsRequest): Promise<void> {

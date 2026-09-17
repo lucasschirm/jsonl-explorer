@@ -209,7 +209,7 @@ describe('filter store', () => {
       scannedRows: 5,
       totalRows: 10,
     })
-    expect(filterStore.progress).toEqual({ scannedRows: 5, matchedRows: 2 })
+    expect(filterStore.progress).toEqual({ scannedRows: 5, matchedRows: 2, totalRows: 10 })
 
     worker.release()
     await pending
