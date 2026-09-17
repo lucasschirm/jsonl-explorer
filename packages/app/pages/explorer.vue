@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFileStore } from '~/stores/file'
 import { useExporterStore } from '~/stores/exporter'
@@ -7,6 +7,7 @@ import { useToastStore } from '~/stores/toasts'
 import { useUrlRecovery } from '~/composables/useUrlRecovery'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { decideUrlInput } from '~/utils/urlIntake'
+import { isEditableEventTarget, isModalOpen } from '~/utils/keyboard'
 import LoadingPanel from '~/components/loading/LoadingPanel.vue'
 import RowList from '~/components/explorer/RowList.vue'
 import StatusBar from '~/components/explorer/StatusBar.vue'
@@ -90,6 +91,52 @@ onMounted(async () => {
     toastStore.info('No file loaded. Please open a JSONL file first.', 'No file')
     await router.push('/')
   }
+})
+
+// ---------------------------------------------------------------------------
+// Explorer keyboard policy (TSK0036)
+//
+// - Ctrl/Cmd+F — focus the filter input (the explorer's search).
+// - Enter on the row list — move focus to the editor for the active row
+//   (tree root value, or the raw editor for invalid rows).
+//
+// Neither shortcut may OVERRIDE a focused control: while an input,
+// textarea, select, or contenteditable has focus its native keys win;
+// while a modal is open the dialog owns the keys.
+// ---------------------------------------------------------------------------
+function onExplorerKeydown(event: KeyboardEvent): void {
+  if (isEditableEventTarget(event.target)) return
+  if (isModalOpen()) return
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+    event.preventDefault()
+    document.querySelector<HTMLInputElement>('[data-testid="filter-input"]')?.focus()
+    return
+  }
+
+  // Plain Enter (no modifiers) on the row list: focus the active row's
+  // editor. The editor control only exists when a row is active and the
+  // detail document is loaded, so a null query result is the no-op.
+  if (event.key !== 'Enter' || event.ctrlKey || event.metaKey || event.altKey) return
+  const target = event.target instanceof HTMLElement ? event.target : null
+  if (!target?.closest('[data-testid="row-list-scroll"]')) return
+  // Root container: the bracket (expanded) or the summary (collapsed) is
+  // the edit affordance; invalid rows get the raw editor instead.
+  const editor = document.querySelector<HTMLElement>(
+    '[data-testid="json-edit-root-0"], [data-testid="json-count-root-0"], [data-testid="detail-raw-edit-btn"]',
+  )
+  if (editor) {
+    event.preventDefault()
+    editor.focus()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onExplorerKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onExplorerKeydown)
 })
 
 /**

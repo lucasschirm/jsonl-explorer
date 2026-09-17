@@ -17,6 +17,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useVirtualizer, type Virtualizer } from '@tanstack/vue-virtual'
 import { useRowStore } from '~/stores/rows'
 import { useSelectionStore } from '~/stores/selection'
+import { isEditableEventTarget } from '~/utils/keyboard'
 
 const props = withDefaults(
   defineProps<{
@@ -128,17 +129,6 @@ function onRowClick(index: number): void {
   scrollRef.value?.focus() // arrow keys work right after a click
 }
 
-/** Keyboard focus guard: never hijack keys from text editors (TSK0023). */
-function isEditable(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  return (
-    target.isContentEditable ||
-    target.tagName === 'INPUT' ||
-    target.tagName === 'TEXTAREA' ||
-    target.tagName === 'SELECT'
-  )
-}
-
 /** Keyboard cursor waiting for its (uncached) row to arrive. */
 let pendingCursor: number | null = null
 
@@ -146,7 +136,8 @@ let pendingCursor: number | null = null
  *  the view boundaries (no wrap). One row is fetched on demand when the
  *  target is not cached yet; activation lands when it arrives. */
 function onKeydown(event: KeyboardEvent): void {
-  if (isEditable(event.target)) return
+  // Never hijack keys from a focused text editor (TSK0023/TSK0036).
+  if (isEditableEventTarget(event.target)) return
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
   event.preventDefault()
   const total = rowStore.totalFiltered

@@ -88,13 +88,20 @@ focus, then
 
 - `↑` / `↓` — Move the selection up/down (clamped at the first and last
   row; the row is scrolled into view and fetched on demand when it is
-  not cached yet). Keys are never captured while a text editor is
-  focused.
+  not cached yet).
+- `Enter` — Move focus to the editor for the selected row (the tree's
+  root value, or the raw editor for invalid rows), ready for `Tab`/click
+  to start editing.
 
-Planned (with the detail panel and search):
+Page-wide shortcuts (work wherever focus is on the page):
 
-- `Enter` — Focus JSON editor on right panel
-- `Ctrl+F` — Focus search bar
+- `Ctrl+F` / `Cmd+F` — Focus the filter input (the explorer's search).
+
+**Focus policy** — these shortcuts never override a focused control:
+while an input, textarea, select, or contenteditable has focus, its
+native keys win (e.g. `Ctrl+F` inside the filter input still triggers
+the browser find, and `Enter` inside an editor still commits it). While
+a dialog (raw view, confirmations) is open, the dialog owns the keys.
 
 ## Raw View
 

@@ -101,6 +101,9 @@ dist
 # vitepress build output
 **/.vitepress/dist
 
+# playwright test artifacts (e2e)
+test-results/
+
 # vitepress cache directory
 **/.vitepress/cache
 
