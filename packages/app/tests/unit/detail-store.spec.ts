@@ -159,6 +159,36 @@ describe('detail loader store (TSK0024)', () => {
     expect(detailStore.loadError).toContain('Disk read failed')
   })
 
+  it('invalid-JSON toast is non-duplicating (per row, per context)', async () => {
+    await initSource()
+    const toastStore = useToastStore()
+
+    // First invalid row: one toast.
+    selectionStore.activate(1, 0)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(1))
+    answerLine(getLineOps()[0]!, 'bad one')
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    expect(toastStore.toasts.filter((t) => t.title === 'Invalid JSON').length).toBe(1)
+
+    // Leave and come back to the SAME row: no duplicate toast.
+    selectionStore.activate(2, 1)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    answerLine(getLineOps()[1]!, '{"fine":true}')
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    selectionStore.activate(1, 0)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(3))
+    answerLine(getLineOps()[2]!, 'bad one')
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    expect(toastStore.toasts.filter((t) => t.title === 'Invalid JSON').length).toBe(1)
+
+    // A DIFFERENT invalid row toasts again.
+    selectionStore.activate(3, 2)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(4))
+    answerLine(getLineOps()[3]!, 'bad three')
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    expect(toastStore.toasts.filter((t) => t.title === 'Invalid JSON').length).toBe(2)
+  })
+
   it('resets (idle) when the selection is cleared — source replacement', async () => {
     await initSource()
     selectionStore.activate(1, 0)

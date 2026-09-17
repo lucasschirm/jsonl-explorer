@@ -92,4 +92,22 @@ Planned (with the detail panel and search):
 
 ## Raw View
 
-Click the "Raw" button to see a virtualized raw text view of filtered lines, useful for copying or inspecting unformatted content.
+The "Raw" button (detail toolbar) opens a virtualized raw text view of
+the CURRENT (filtered) lines — useful for inspecting unformatted content
+or copying it.
+
+- **Bounded by design** — the modal virtualizes the dataset (same
+  row-window cache as the list). It never concatenates all rows into
+  one string, so opening Raw on a very large filtered view keeps the
+  DOM and memory bounded to the visible viewport.
+- **Same semantics as the list** — each row shows the byte-capped,
+  C0/DEL-escaped, single-line preview plus its source line number.
+  Invalid rows are shown exactly like in the list (selectable,
+  exportable, never silently dropped).
+- **Copy** — each raw row (and the selected row's detail panel) has a
+  Copy action that fetches the FULL row text and puts it on the
+  clipboard. Clipboard failures (e.g. permission denied) surface as an
+  error toast — copying never fails silently.
+- **Accessible** — the modal traps focus, closes on Escape or backdrop
+  click, and is announced as a dialog (`role="dialog"`,
+  `aria-modal`), matching the app's other modals.

@@ -41,6 +41,8 @@ export const useDetailStore = defineStore('detail', () => {
   /** Row exceeds the parse threshold: raw until confirmedTreeView(). */
   const needsConfirm = ref(false)
   let loadToken = 0
+  /** Non-duplicating invalid-JSON toast: one per (row, context). */
+  let lastInvalidToastLineId: number | null = null
 
   const parsed = computed<JsonParseResult | null>(() => {
     if (status.value !== 'ready' || text.value === null || needsConfirm.value) return null
@@ -68,6 +70,7 @@ export const useDetailStore = defineStore('detail', () => {
     loadError.value = null
     needsConfirm.value = false
     viewMode.value = 'format'
+    lastInvalidToastLineId = null // new context: re-toasting is allowed again
   }
 
   async function load(id: number): Promise<void> {
@@ -91,7 +94,13 @@ export const useDetailStore = defineStore('detail', () => {
       if (byteLength.value > ENGINE_DEFAULTS.largeRowDetailThreshold) {
         needsConfirm.value = true // raw until the user confirms the tree
       } else if (parseJsonText(full.text).ok === false) {
-        toastStore.error('Row is not valid JSON — showing raw text', 'Invalid JSON')
+        // Non-duplicating policy: the banner is always visible; the toast
+        // fires once per invalid row (re-selecting the SAME row after
+        // leaving it does not re-toast; a different row does).
+        if (id !== lastInvalidToastLineId) {
+          lastInvalidToastLineId = id
+          toastStore.error('Row is not valid JSON — showing raw text', 'Invalid JSON')
+        }
       }
       status.value = 'ready'
     } catch (error) {

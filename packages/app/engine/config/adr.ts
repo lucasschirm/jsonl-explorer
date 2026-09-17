@@ -572,6 +572,33 @@ export const ENGINE_DEFAULTS = {
  */
 
 // ============================================================================
+// VIRTUALIZED RAW VIEW AND COPY ACTIONS (TSK0025)
+// ============================================================================
+/**
+ * Virtualized raw view and copy actions (TSK0025):
+ * - "Raw" opens a MODAL that virtualizes the current (filtered) dataset
+ *   — the same @tanstack/vue-virtual pattern, the same bounded row
+ *   windows/cache, the same display-index -> lineId mapping as the row
+ *   list. The dataset is NEVER concatenated into one string: DOM and
+ *   memory stay bounded by the viewport regardless of filtered size.
+ * - Raw rows reuse the list's preview semantics exactly (byte-capped,
+ *   C0/DEL-escaped, single line) plus the source line number; full
+ *   text is only materialized per-row on Copy (getLine).
+ * - Copy actions (detail panel: selected row; raw modal: any row) go
+ *   through one helper (utils/clipboard.ts): async Clipboard API,
+ *   execCommand fallback, REJECTION on failure — callers show a typed
+ *   error toast. Copying never fails silently.
+ * - Invalid-JSON toast policy is non-duplicating: one toast per invalid
+ *   row per context (the banner is always visible; re-selecting the
+ *   same row does not re-toast; a different row does).
+ * - Modal accessibility is inherited from the shared Modal (focus trap,
+ *   Escape, backdrop close, role=dialog aria-modal, focus restore).
+ *
+ * References: PLAN.md 4.3 (raw view), TSK0022 (virtualization),
+ *           TSK0024 (detail panel, invalid-JSON states)
+ */
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 export const ADR_CONFIG = {

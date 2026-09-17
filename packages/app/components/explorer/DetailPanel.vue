@@ -12,13 +12,48 @@
  * parsed value for text consumers) — they never post setEdit and never
  * touch the worker's text.
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useDetailStore } from '~/stores/detail'
 import { ENGINE_DEFAULTS } from '~/engine/config/adr'
-import { formatBytes } from '~/utils/jsonTree'
+import { formatBytes, serializeFormatted, serializeCompact } from '~/utils/jsonTree'
 import JsonTree from '~/components/explorer/JsonTree.vue'
+import RawModal from '~/components/explorer/RawModal.vue'
+import { useToastStore } from '~/stores/toasts'
+import { copyText } from '~/utils/clipboard'
 
 const detailStore = useDetailStore()
+const toastStore = useToastStore()
+
+/** Raw view of the current filtered dataset (virtualized modal). */
+const rawOpen = ref(false)
+const copying = ref(false)
+
+/** Copy the selected row's FULL text (loaded via getLine). For valid
+ *  JSON the Format/Compact mode decides the serialization (the
+ *  presentation-only modes are the copy/export consumer); invalid or
+ *  unconfirmed rows copy the raw text. Errors are surfaced, never silent. */
+function copyPayload(): string {
+  const parsed = detailStore.parsed
+  if (parsed !== null && parsed.ok) {
+    return detailStore.viewMode === 'compact'
+      ? serializeCompact(parsed.value)
+      : serializeFormatted(parsed.value)
+  }
+  return detailStore.text ?? ''
+}
+
+async function copyRow(): Promise<void> {
+  if (detailStore.status !== 'ready' || detailStore.text === null) return
+  copying.value = true
+  try {
+    await copyText(copyPayload())
+    toastStore.success('Row copied', 'Copied')
+  } catch (error) {
+    toastStore.error(error instanceof Error ? error.message : 'Copy failed', 'Copy failed')
+  } finally {
+    copying.value = false
+  }
+}
 
 const showTree = computed(
   () => detailStore.status === 'ready' && !detailStore.needsConfirm && detailStore.parsed?.ok === true,
@@ -64,7 +99,24 @@ function confirmTree(): void {
       >
         Compact
       </button>
-      <span class="ml-auto text-xs text-base-content/50">
+      <button
+        class="btn btn-sm btn-ghost ml-auto"
+        data-testid="detail-copy-btn"
+        :disabled="detailStore.status !== 'ready' || copying"
+        title="Copy the full text of this row"
+        @click="copyRow()"
+      >
+        {{ copying ? '…' : 'Copy' }}
+      </button>
+      <button
+        class="btn btn-sm btn-ghost"
+        data-testid="detail-raw-btn"
+        title="Open the virtualized raw view of the current (filtered) rows"
+        @click="rawOpen = true"
+      >
+        Raw
+      </button>
+      <span class="text-xs text-base-content/50">
         <template v-if="detailStore.status === 'ready'">
           Line {{ detailStore.lineId }} · {{ formatBytes(detailStore.byteLength) }}
         </template>
@@ -135,4 +187,8 @@ function confirmTree(): void {
       </template>
     </div>
   </section>
+
+  <!-- Virtualized raw view of the current filtered dataset (bounded
+       DOM/memory; never concatenates the dataset). -->
+  <RawModal v-model="rawOpen" />
 </template>

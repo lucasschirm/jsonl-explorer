@@ -4,12 +4,13 @@
  * gate (no auto-parse above the threshold), and Format/Compact as
  * presentation-only controls (no setEdit ever).
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { useJsonlEngine, resetJsonlEngineForTests } from '~/composables/useJsonlEngine'
 import { useSelectionStore } from '~/stores/selection'
 import { useDetailStore } from '~/stores/detail'
+import { useToastStore } from '~/stores/toasts'
 import DetailPanel from '~/components/explorer/DetailPanel.vue'
 import { FakeWorker, success, failure } from '../helpers/fakeWorker'
 
@@ -26,6 +27,8 @@ describe('DetailPanel (TSK0024)', () => {
   let worker: FakeWorker
   let wrapper: VueWrapper<InstanceType<typeof DetailPanel>>
   let selectionStore: ReturnType<typeof useSelectionStore>
+  let detailStore: ReturnType<typeof useDetailStore>
+  let clipboardMock: { writeText: ReturnType<typeof vi.fn> }
 
   const getLineOps = (): PostedOp[] =>
     worker.posted.filter((m) => (m as PostedOp).type === 'getLine') as PostedOp[]
@@ -54,7 +57,16 @@ describe('DetailPanel (TSK0024)', () => {
     worker = new FakeWorker()
     useJsonlEngine({ workerFactory: () => worker as unknown as Worker })
     selectionStore = useSelectionStore()
+    detailStore = useDetailStore()
+    clipboardMock = { writeText: vi.fn().mockResolvedValue(undefined) }
+    Object.defineProperty(navigator, 'clipboard', { value: clipboardMock, configurable: true })
     wrapper = mount(DetailPanel, { global: { plugins: [pinia] } })
+  })
+
+  afterEach(() => {
+    wrapper.unmount()
+    delete (navigator as { clipboard?: unknown }).clipboard
+    document.body.innerHTML = ''
   })
 
   it('shows the placeholder before a row is selected', () => {
@@ -142,5 +154,60 @@ describe('DetailPanel (TSK0024)', () => {
 
     selectionStore.resetSelection()
     await vi.waitFor(() => expect(wrapper.find('[data-testid="detail-placeholder"]').exists()).toBe(true))
+  })
+
+  it('Copy is mode-aware for valid JSON (format pretty / compact minified)', async () => {
+    // Not ready: disabled.
+    expect(wrapper.find('[data-testid="detail-copy-btn"]').attributes('disabled')).toBeDefined()
+
+    await initSource()
+    await selectAndAnswer('{"a":1, "b":[2,3]}')
+    const copyBtn = wrapper.find('[data-testid="detail-copy-btn"]')
+    expect(copyBtn.attributes('disabled')).toBeUndefined()
+
+    // Default mode (format): pretty-printed, two-space.
+    await copyBtn.trigger('click')
+    await vi.waitFor(() => expect(clipboardMock.writeText).toHaveBeenCalledTimes(1))
+    expect(clipboardMock.writeText).toHaveBeenCalledWith('{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}')
+
+    // Compact mode: minified. (Wait for the copy state to settle: the
+    // button is disabled while a copy is in flight.)
+    await vi.waitFor(() => expect(copyBtn.attributes('disabled')).toBeUndefined())
+    detailStore.setViewMode('compact')
+    await copyBtn.trigger('click')
+    await vi.waitFor(() => expect(clipboardMock.writeText).toHaveBeenCalledTimes(2))
+    expect(clipboardMock.writeText).toHaveBeenLastCalledWith('{"a":1,"b":[2,3]}')
+  })
+
+  it('Copy of an INVALID row uses the raw text (no serialization)', async () => {
+    await initSource()
+    await selectAndAnswer('not json, just text')
+    await wrapper.find('[data-testid="detail-copy-btn"]').trigger('click')
+    const toastStore = useToastStore()
+    await vi.waitFor(() =>
+      expect(toastStore.toasts.some((t) => t.title === 'Copied')).toBe(true),
+    )
+    expect(clipboardMock.writeText).toHaveBeenCalledWith('not json, just text')
+  })
+
+  it('surfaces a clipboard failure (typed toast, not silent)', async () => {
+    await initSource()
+    await selectAndAnswer('{"a":1}')
+    clipboardMock.writeText.mockRejectedValueOnce(new Error('Clipboard access denied'))
+
+    await wrapper.find('[data-testid="detail-copy-btn"]').trigger('click')
+    const toastStore = useToastStore()
+    await vi.waitFor(() =>
+      expect(toastStore.toasts.some((t) => t.title === 'Copy failed')).toBe(true),
+    )
+  })
+
+  it('Raw opens the virtualized raw modal (dialog on body)', async () => {
+    await initSource()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    await wrapper.find('[data-testid="detail-raw-btn"]').trigger('click')
+    await vi.waitFor(() =>
+      expect(document.body.querySelector('[role="dialog"]')).not.toBeNull(),
+    )
   })
 })
