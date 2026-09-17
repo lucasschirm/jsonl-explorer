@@ -44,24 +44,47 @@ not the source bytes.
 
 ## Editing Values
 
-The inline editor UI (tree-level primitive editing and raw row editing) is
-built on the storage above:
+The detail panel's tree is editable in place. Clicking a value opens a
+single-line editor seeded with the value's current JSON token:
 
-1. Click a value — inline editor appears
-2. Type new value — try `JSON.parse` first (e.g., `42`, `true`, `{"a":1}`)
-3. Press `Enter` or click away to commit
-4. Press `Escape` to cancel
+- **Primitives** (string, number, boolean, null) — click the token.
+- **Objects and arrays** — click the bracket (expanded) or the collapsed
+  summary (e.g. `{4 items}`); the *whole container* is replaced.
+
+The chevron still only expands/collapses; only the value itself starts an
+edit. Exactly one node is editable at a time; switching rows or reloading
+the line cancels any open session (a draft never carries across rows).
+
+### Commit
+
+1. Type the new value — `JSON.parse` is tried first (e.g. `42`, `true`,
+   `null`, `"hi"`, `[1,2]`, `{"a":1}`)
+2. `Enter` or clicking away commits; `Escape` cancels
+3. The commit re-serializes the **entire document** (compact JSON, exactly
+   one line) and mirrors it with **one** `setEdit` RPC — the worker applies
+   it atomically, re-evaluates the active filter for that row, and bumps
+   the generation. The detail tree then reloads from the worker, so what
+   you see is what was stored.
 
 ### Type Coercion
 
-- Valid JSON → parsed as that type
-- Invalid JSON → stored as string
-- Numbers, booleans, null, arrays, objects all supported
+- Valid JSON → stored as that type
+- Invalid JSON (e.g. `hello world`) → stored as a **string**
+- Non-finite number literals (e.g. `1e400`) → stored as a **string**
+  (they would otherwise silently serialize to `null`)
+
+### Safety
+
+- If the row changes while you are editing (stale path), the commit is
+  rejected with one toast — the app never guesses where your edit belongs.
+- A worker-rejected edit (e.g. over the 1 MiB budget, CR/LF) toasts the
+  reason and leaves both the tree and the override map untouched.
 
 ### Reset Line
 
-Click the "Reset" button in the toolbar to revert all edits on the current
-line (the override is removed and the original source row returns).
+The toolbar's **Reset** button (enabled only while the row has an accepted
+override) removes the override: the original source row returns, the
+"edited" badges clear, and the active filter re-evaluates that row.
 
 ## Format / Compact
 

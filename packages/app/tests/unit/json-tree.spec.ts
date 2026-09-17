@@ -4,8 +4,9 @@
  * mutates the value; child counts show when collapsed; primitives get
  * token styling by type.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import JsonTree from '~/components/explorer/JsonTree.vue'
 import type { JsonValue } from '~/utils/jsonTree'
 
@@ -21,6 +22,11 @@ function mountTree(value: JsonValue) {
 }
 
 describe('JsonTree rendering', () => {
+  // JsonNode resolves the detail store (inline editing, TSK0031):
+  // provide an active pinia for the pure-rendering tests below.
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
   it('renders keys, primitives, and containers', () => {
     const wrapper = mountTree(DOC)
     const text = wrapper.text()

@@ -26,6 +26,14 @@ const detailStore = useDetailStore()
 const toastStore = useToastStore()
 const editsStore = useEditsStore()
 
+/** The active row carries a worker-accepted override (enables Reset). */
+const isLineEdited = computed(
+  () =>
+    detailStore.lineId !== null &&
+    detailStore.status === 'ready' &&
+    editsStore.isEdited(detailStore.lineId),
+)
+
 /** Raw view of the current filtered dataset (virtualized modal). */
 const rawOpen = ref(false)
 const copying = ref(false)
@@ -117,6 +125,15 @@ function confirmTree(): void {
         @click="rawOpen = true"
       >
         Raw
+      </button>
+      <button
+        class="btn btn-sm btn-ghost"
+        data-testid="detail-reset-btn"
+        :disabled="detailStore.status !== 'ready' || !isLineEdited"
+        title="Reset this line to its original source text"
+        @click="detailStore.resetLine()"
+      >
+        Reset
       </button>
       <span class="text-xs text-base-content/50">
         <template v-if="detailStore.status === 'ready'">

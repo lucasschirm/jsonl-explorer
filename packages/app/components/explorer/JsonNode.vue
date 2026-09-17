@@ -9,10 +9,18 @@
  *
  * Token styling uses DaisyUI semantic colors (theme-aware CSS variables):
  * key=primary, string=success, number=warning, boolean=info, null=dimmed.
+ *
+ * Editing (TSK0031): every value (primitive OR container) can be edited
+ * inline — clicking the value token opens the store's edit session for
+ * this node's path; Enter/blur commits (JSON.parse coercion, whole
+ * document re-serialized compactly, one setEdit), Escape cancels. The
+ * chevron stays purely expand/collapse.
  */
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import type { JsonValue } from '~/utils/jsonTree'
 import { isArray, childCount, isContainer, objectKeys } from '~/utils/jsonTree'
+import type { EditPath } from '~/utils/jsonEdit'
+import { useDetailStore } from '~/stores/detail'
 
 const props = withDefaults(
   defineProps<{
@@ -23,9 +31,47 @@ const props = withDefaults(
      *  rendered dimmed instead of as an object key). */
     isArrayEntry?: boolean
     depth?: number
+    /** Path from the document root to THIS node (parents only). */
+    path?: EditPath
   }>(),
-  { keyName: null, isArrayEntry: false, depth: 0 }
+  { keyName: null, isArrayEntry: false, depth: 0, path: () => [] },
 )
+
+const detailStore = useDetailStore()
+
+/** Full path of this node (its own key/index appended to the parents').
+ *  Array entries contribute a NUMBER segment (path application matches
+ *  array indices numerically); object entries keep their string key. */
+const nodePath = computed<EditPath>(() => {
+  if (props.keyName === null) return []
+  const segment = props.isArrayEntry ? Number(props.keyName) : props.keyName
+  return [...props.path, segment]
+})
+
+/** True while this node is the one in the inline editor. */
+const isEditingHere = computed(() => {
+  const editing = detailStore.editingPath
+  if (editing === null) return false
+  if (editing.length !== nodePath.value.length) return false
+  return editing.every((segment, i) => segment === nodePath.value[i])
+})
+
+/** Focus the editor input once it has mounted (click-to-edit UX). */
+const editInput = ref<HTMLInputElement | null>(null)
+function focusEditInput(): void {
+  void nextTick(() => {
+    editInput.value?.focus()
+    editInput.value?.select()
+  })
+}
+
+/** Click-to-edit: primitives on the token, containers on the bracket or
+ *  the collapsed summary (the chevron is reserved for expand/collapse). */
+function beginEdit(): void {
+  if (detailStore.isEditing) return // one editor at a time
+  detailStore.startEdit(nodePath.value)
+  if (isEditingHere.value) focusEditInput()
+}
 
 /** Containers with more children than this start collapsed. */
 const COLLAPSE_ABOVE = 50
@@ -80,8 +126,26 @@ function primitiveToken(value: JsonValue): string {
         <span v-if="!isArrayEntry" class="text-base-content/50">:</span>
       </span>
 
-      <!-- Container: chevron + open bracket, or a collapsed summary -->
-      <template v-if="isContainer(value)">
+      <!-- Inline editor (TSK0031): replaces the value token while editing.
+           Enter/blur commit (coerce + whole-document setEdit), Escape cancels. -->
+      <input
+        v-if="isEditingHere"
+        :ref="(el) => (editInput = el as HTMLInputElement | null)"
+        v-model="detailStore.editDraft"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        class="input input-xs font-mono w-48 max-w-full shrink"
+        :aria-label="`Edit value ${keyName ?? 'root'}`"
+        data-testid="json-edit-input"
+        @keydown.enter.prevent="detailStore.commitEdit()"
+        @keydown.esc.prevent="detailStore.cancelEdit()"
+        @blur="detailStore.commitEdit()"
+      />
+
+      <!-- Container: chevron + open bracket, or a collapsed summary.
+           The chevron toggles; the bracket/summary starts the edit. -->
+      <template v-else-if="isContainer(value)">
         <button
           type="button"
           class="shrink-0 p-0.5 text-base-content/60 hover:text-base-content"
@@ -100,21 +164,42 @@ function primitiveToken(value: JsonValue): string {
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
           </svg>
         </button>
-        <span v-if="expanded" class="shrink-0 text-base-content/70">{{ isArr ? '[' : '{' }}</span>
-        <span
+        <button
+          v-if="expanded"
+          type="button"
+          class="shrink-0 p-0 bg-transparent text-base-content/70 cursor-text hover:text-base-content"
+          :data-testid="`json-edit-${keyName ?? 'root'}-${depth}`"
+          title="Edit this value"
+          @click="beginEdit()"
+        >
+          {{ isArr ? '[' : '{' }}
+        </button>
+        <button
           v-else
-          class="shrink-0 text-base-content/60"
+          type="button"
+          class="shrink-0 p-0 bg-transparent text-base-content/60 cursor-text hover:text-base-content"
           :data-testid="`json-count-${keyName ?? 'root'}-${depth}`"
+          title="Edit this value"
+          @click="beginEdit()"
         >
           {{ isArr ? '[' : '{' }} {{ count }} item{{ count === 1 ? '' : 's' }}
           {{ isArr ? ']' : '}' }}
-        </span>
+        </button>
       </template>
 
-      <!-- Primitive: themed token -->
-      <span v-else class="break-all" :class="tokenClass(value)" :data-token="typeof value === 'string' ? 'string' : value === null ? 'null' : String(typeof value)">
+      <!-- Primitive: themed, editable token (click to edit) -->
+      <button
+        v-else
+        type="button"
+        class="break-all p-0 bg-transparent text-left cursor-text hover:underline decoration-dotted underline-offset-2"
+        :class="tokenClass(value)"
+        :data-token="typeof value === 'string' ? 'string' : value === null ? 'null' : String(typeof value)"
+        :data-testid="`json-edit-${keyName ?? 'root'}-${depth}`"
+        title="Edit this value"
+        @click="beginEdit()"
+      >
         {{ primitiveToken(value) }}
-      </span>
+      </button>
     </div>
 
     <!-- Children (objects and arrays), each a node of its own -->
@@ -126,6 +211,7 @@ function primitiveToken(value: JsonValue): string {
         :key-name="entry.key"
         :is-array-entry="isArr"
         :depth="depth + 1"
+        :path="nodePath"
       />
       <span class="block pl-5 text-base-content/70">{{ isArr ? ']' : '}' }}</span>
     </div>

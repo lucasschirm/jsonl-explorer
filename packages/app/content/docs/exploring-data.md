@@ -53,10 +53,16 @@ the current view.
 ## Right Panel: JSON View
 
 The selected row's FULL text is loaded on demand (list previews are
-byte-capped; the detail is exact) and rendered as a read-only JSON tree:
+byte-capped; the detail is exact) and rendered as an editable JSON tree:
 
 - **Collapse/Expand** — Click chevrons to toggle objects and arrays,
   independently per node. Collapsed nodes show their child count.
+- **Inline editing** — Click any value (primitive token, container
+  bracket, or collapsed summary) to edit it in place; `Enter`/blur
+  commits, `Escape` cancels. Edits are stored as whole-row overrides
+  keyed by stable line ID — see [Editing and Export](/docs/editing-and-export).
+  Edited rows show an "edited" badge; the toolbar's Reset button
+  restores the original row.
 - **Syntax highlighting** — Token colors follow the DaisyUI theme
   (light/dark): keys, strings, numbers, booleans, and nulls are all
   distinguishable at a glance. Large containers start collapsed so a

@@ -20,6 +20,7 @@ interface PostedOp {
   type: string
   requestId?: string
   lineId?: number
+  text?: string
 }
 
 const LARGE_TEXT = JSON.stringify({ data: 'x'.repeat(1200 * 1024) }) // > 1 MiB
@@ -238,5 +239,238 @@ describe('DetailPanel (TSK0024)', () => {
     await vi.waitFor(() =>
       expect(document.body.querySelector('[role="dialog"]')).not.toBeNull(),
     )
+  })
+})
+
+describe('DetailPanel inline tree editing (TSK0031)', () => {
+  let pinia: Pinia
+  let worker: FakeWorker
+  let wrapper: VueWrapper<InstanceType<typeof DetailPanel>>
+  let selectionStore: ReturnType<typeof useSelectionStore>
+  let detailStore: ReturnType<typeof useDetailStore>
+  let editsStore: ReturnType<typeof useEditsStore>
+
+  const getLineOps = (): PostedOp[] =>
+    worker.posted.filter((m) => (m as PostedOp).type === 'getLine') as PostedOp[]
+  const setEditOps = (): PostedOp[] =>
+    worker.posted.filter((m) => (m as PostedOp).type === 'setEdit') as PostedOp[]
+
+  async function initSource(): Promise<void> {
+    const pending = useJsonlEngine().open('file', new File(['a\n'], 't.jsonl'))
+    await vi.waitFor(() => {
+      expect(worker.posted.some((m) => (m as PostedOp).type === 'initFile')).toBe(true)
+    })
+    const op = worker.posted.find((m) => (m as PostedOp).type === 'initFile') as PostedOp
+    worker.emit(success(op.requestId!, { name: 't.jsonl', size: 2, type: 'file' }))
+    await pending
+  }
+
+  async function selectAndAnswer(text: string): Promise<void> {
+    selectionStore.activate(1, 0)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(1))
+    worker.emit(success(getLineOps()[0]!.requestId!, { lineId: 1, text, isEdited: false }))
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    await nextTick()
+  }
+
+  async function clickToken(keyName: string, depth: number) {
+    await wrapper.find(`[data-testid="json-edit-${keyName}-${depth}"]`).trigger('click')
+    await nextTick()
+  }
+
+  beforeEach(() => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    resetJsonlEngineForTests()
+    worker = new FakeWorker()
+    useJsonlEngine({ workerFactory: () => worker as unknown as Worker })
+    selectionStore = useSelectionStore()
+    detailStore = useDetailStore()
+    editsStore = useEditsStore()
+    wrapper = mount(DetailPanel, { global: { plugins: [pinia] } })
+  })
+
+  afterEach(() => {
+    wrapper.unmount()
+    document.body.innerHTML = ''
+  })
+
+  it('clicking a primitive token opens a seeded editor; Enter commits the whole document', async () => {
+    await initSource()
+    await selectAndAnswer('{"greeting":"hi","n":1}')
+
+    await clickToken('greeting', 1)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    expect(input.exists()).toBe(true)
+    // Seeded with the current raw token.
+    expect((input.element as HTMLInputElement).value).toBe('"hi"')
+
+    await input.setValue('2')
+    await input.trigger('keydown.enter')
+
+    await vi.waitFor(() => expect(setEditOps().length).toBe(1))
+    // ONE setEdit with the WHOLE re-serialized document.
+    expect(setEditOps()[0]!.text).toBe('{"greeting":2,"n":1}')
+    worker.emit(success(setEditOps()[0]!.requestId!, { lineId: 1, isEdited: true, newGeneration: 2, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    worker.emit(success(getLineOps()[1]!.requestId!, { lineId: 1, text: '{"greeting":2,"n":1}', isEdited: true }))
+    await vi.waitFor(() => expect(detailStore.text).toBe('{"greeting":2,"n":1}'))
+    await nextTick()
+
+    // The editor is gone, the token shows the new value, the badge is on.
+    expect(wrapper.find('[data-testid="json-edit-input"]').exists()).toBe(false)
+    expect(wrapper.find(`[data-testid="json-edit-greeting-1"]`).text()).toBe('2')
+    expect(wrapper.find('[data-testid="detail-edited-badge"]').exists()).toBe(true)
+    expect(editsStore.isEdited(1)).toBe(true)
+  })
+
+  it('an array element is editable (numeric path segment)', async () => {
+    await initSource()
+    await selectAndAnswer('{"items":["a","b"]}')
+
+    // Element 1 of "items": keyName '1', depth 2 (root=0, items=1, entry=2).
+    await clickToken('1', 2)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe('"b"')
+
+    await input.setValue('"c"')
+    await input.trigger('keydown.enter')
+    await vi.waitFor(() => expect(setEditOps().length).toBe(1))
+    expect(setEditOps()[0]!.text).toBe('{"items":["a","c"]}')
+    worker.emit(success(setEditOps()[0]!.requestId!, { lineId: 1, isEdited: true, newGeneration: 2, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    worker.emit(success(getLineOps()[1]!.requestId!, { lineId: 1, text: '{"items":["a","c"]}', isEdited: true }))
+    await vi.waitFor(() => expect(detailStore.text).toBe('{"items":["a","c"]}'))
+  })
+
+  it('a JSON null value seeds the editor with the token `null`', async () => {
+    await initSource()
+    await selectAndAnswer('{"n":null}')
+
+    await clickToken('n', 1)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe('null')
+
+    await input.trigger('keydown.esc')
+    await nextTick()
+    expect(setEditOps().length).toBe(0)
+    expect(detailStore.text).toBe('{"n":null}')
+  })
+
+  it('Escape cancels the edit: no RPC, token restored', async () => {
+    await initSource()
+    await selectAndAnswer('{"greeting":"hi"}')
+
+    await clickToken('greeting', 1)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('nope')
+    await input.trigger('keydown.esc')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="json-edit-input"]').exists()).toBe(false)
+    expect(setEditOps().length).toBe(0)
+    expect(wrapper.find(`[data-testid="json-edit-greeting-1"]`).text()).toBe('"hi"')
+    expect(detailStore.text).toBe('{"greeting":"hi"}')
+  })
+
+  it('an unquoted draft is saved as a string (coercion fallback)', async () => {
+    await initSource()
+    await selectAndAnswer('{"greeting":"hi"}')
+
+    await clickToken('greeting', 1)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    await input.setValue('hello world')
+    await input.trigger('keydown.enter')
+
+    await vi.waitFor(() => expect(setEditOps().length).toBe(1))
+    expect(setEditOps()[0]!.text).toBe('{"greeting":"hello world"}')
+    worker.emit(success(setEditOps()[0]!.requestId!, { lineId: 1, isEdited: true, newGeneration: 2, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    worker.emit(success(getLineOps()[1]!.requestId!, { lineId: 1, text: '{"greeting":"hello world"}', isEdited: true }))
+    await vi.waitFor(() => expect(detailStore.text).toBe('{"greeting":"hello world"}'))
+  })
+
+  it('a collapsed container is editable via its summary; the whole container is replaced', async () => {
+    // 60 items => starts collapsed (DOM guard); the summary carries the
+    // json-count-* testid (the expanded bracket carries json-edit-*).
+    const doc = JSON.stringify({ a: 1, list: Array.from({ length: 60 }, (_, i) => i) })
+    await initSource()
+    await selectAndAnswer(doc)
+
+    await wrapper.find('[data-testid="json-count-list-1"]').trigger('click')
+    await nextTick()
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe(JSON.stringify(Array.from({ length: 60 }, (_, i) => i)))
+
+    await input.setValue('[1]')
+    await input.trigger('keydown.enter')
+
+    await vi.waitFor(() => expect(setEditOps().length).toBe(1))
+    expect(setEditOps()[0]!.text).toBe('{"a":1,"list":[1]}')
+    worker.emit(success(setEditOps()[0]!.requestId!, { lineId: 1, isEdited: true, newGeneration: 2, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    worker.emit(success(getLineOps()[1]!.requestId!, { lineId: 1, text: '{"a":1,"list":[1]}', isEdited: true }))
+    await vi.waitFor(() => expect(detailStore.text).toBe('{"a":1,"list":[1]}'))
+  })
+
+  it('Reset is disabled until the row is edited, then restores the original text', async () => {
+    await initSource()
+    await selectAndAnswer('{"a":1}')
+
+    const resetBtn = wrapper.find('[data-testid="detail-reset-btn"]')
+    expect(resetBtn.exists()).toBe(true)
+    expect((resetBtn.element as HTMLButtonElement).disabled).toBe(true)
+
+    // Make an edit so the row becomes "edited".
+    await clickToken('a', 1)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    await input.setValue('2')
+    await input.trigger('keydown.enter')
+    await vi.waitFor(() => expect(setEditOps().length).toBe(1))
+    worker.emit(success(setEditOps()[0]!.requestId!, { lineId: 1, isEdited: true, newGeneration: 2, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    worker.emit(success(getLineOps()[1]!.requestId!, { lineId: 1, text: '{"a":2}', isEdited: true }))
+    await vi.waitFor(() => expect(editsStore.isEdited(1)).toBe(true))
+    await vi.waitFor(() => expect(detailStore.text).toBe('{"a":2}'))
+    await nextTick()
+    expect((resetBtn.element as HTMLButtonElement).disabled).toBe(false)
+
+    await resetBtn.trigger('click')
+    await vi.waitFor(() => expect(setEditOps().length).toBe(2))
+    // Reset = setEdit WITHOUT text.
+    expect(setEditOps()[1]!.text).toBeUndefined()
+    worker.emit(success(setEditOps()[1]!.requestId!, { lineId: 1, isEdited: false, newGeneration: 3, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(3))
+    worker.emit(success(getLineOps()[2]!.requestId!, { lineId: 1, text: '{"a":1}', isEdited: false }))
+    await vi.waitFor(() => expect(detailStore.text).toBe('{"a":1}'))
+    await vi.waitFor(() => expect(editsStore.isEdited(1)).toBe(false))
+    await nextTick()
+
+    expect(editsStore.isEdited(1)).toBe(false)
+    expect(wrapper.find('[data-testid="detail-edited-badge"]').exists()).toBe(false)
+    expect((resetBtn.element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('switching rows mid-edit cancels the session (no cross-row draft)', async () => {
+    await initSource()
+    await selectAndAnswer('{"a":1}')
+    await clickToken('a', 1)
+    const input = wrapper.find('[data-testid="json-edit-input"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('77')
+
+    // Leave the row (e.g. click another list row).
+    selectionStore.activate(2, 1)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(2))
+    worker.emit(success(getLineOps()[1]!.requestId!, { lineId: 2, text: '{"b":2}', isEdited: false }))
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    await nextTick()
+
+    expect(setEditOps().length).toBe(0)
+    expect(wrapper.find('[data-testid="json-edit-input"]').exists()).toBe(false)
   })
 })
