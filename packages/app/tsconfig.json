@@ -5,7 +5,10 @@
     "paths": {
       "#app/*": ["./*"],
       "#shared/*": ["../shared/src/*"],
-      "~/engine/*": ["engine/*"],
+      "~": ["."],
+      "~/*": ["./*"],
+      "@": ["."],
+      "@/*": ["./*"],
       "~/engine": ["engine/index"],
       "@jsonl-explorer/shared/*": ["../shared/src/*"],
       "@jsonl-explorer/shared": ["../shared/src/index"]

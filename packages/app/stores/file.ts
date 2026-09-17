@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref, computed, shallowRef } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useJsonlEngine } from '~/composables/useJsonlEngine'
+import { useSelectionStore } from '~/stores/selection'
+import { useFilterStore } from '~/stores/filter'
 import type { JsonlEngine } from '~/engine/index'
-import { createJsonlEngine } from '~/engine/index'
 
 export interface FileMetadata {
   name: string
@@ -10,99 +12,100 @@ export interface FileMetadata {
   url?: string
 }
 
+/**
+ * File/source metadata store.
+ *
+ * Only scalars live here (name, size, type, URL string): the `File`
+ * object, source bytes, and indexes stay in the worker and are reached
+ * through the engine handle (`getEngine()`), never through reactive
+ * state.
+ */
 export const useFileStore = defineStore('file', () => {
+  const engineApi = useJsonlEngine()
   const metadata = ref<FileMetadata | null>(null)
-  const engine = shallowRef<JsonlEngine | null>(null)
-  const isLoading = ref(false)
   const loadError = ref<string | null>(null)
+
+  // Reference-counted in the composable, so a rejected concurrent open does
+  // not clear the flag while the in-flight open is still loading.
+  const isLoading = computed(() => engineApi.loading.value)
 
   const hasFile = computed(() => metadata.value !== null)
   const fileName = computed(() => metadata.value?.name ?? '')
   const fileSize = computed(() => metadata.value?.size ?? 0)
 
+  // A fatal worker error destroys the source with it: drop all derived UI
+  // state immediately and leave only the fatal banner + reset path.
+  watch(
+    engineApi.fatal,
+    (isFatal) => {
+      if (!isFatal) return
+      metadata.value = null
+      resetDerivedState()
+    },
+    { immediate: true },
+  )
+
+  function trackError(error: unknown): void {
+    loadError.value = error instanceof Error ? error.message : 'Failed to load source'
+  }
+
+  /** A new source invalidates every derived view (selection + filter). */
+  function resetDerivedState(): void {
+    useSelectionStore().resetSelection()
+    useFilterStore().resetFilterState()
+  }
+
   async function loadFile(file: File) {
-    isLoading.value = true
     loadError.value = null
-
     try {
-      const newEngine = createJsonlEngine()
-      await newEngine.initFile(file)
-
-      engine.value = newEngine
-      metadata.value = {
-        name: file.name,
-        size: file.size,
-        type: 'file',
-      }
+      const result = await engineApi.open('file', { file })
+      metadata.value = { name: result.name, size: result.size, type: result.type }
+      resetDerivedState()
     } catch (error) {
-      loadError.value = error instanceof Error ? error.message : 'Failed to load file'
+      trackError(error)
       throw error
-    } finally {
-      isLoading.value = false
     }
   }
 
   async function loadFromUrl(url: string, headers: Record<string, string> = {}) {
-    isLoading.value = true
     loadError.value = null
-
     try {
-      const newEngine = createJsonlEngine()
-      await newEngine.initUrl(url, headers)
-
-      engine.value = newEngine
-      metadata.value = {
-        name: new URL(url).pathname.split('/').pop() || 'remote.jsonl',
-        size: 0, // Unknown until indexed
-        type: 'url',
-        url,
-      }
+      const result = await engineApi.open('url', { url, headers })
+      metadata.value = { name: result.name, size: result.size, type: result.type, url }
+      resetDerivedState()
     } catch (error) {
-      loadError.value = error instanceof Error ? error.message : 'Failed to load from URL'
+      trackError(error)
       throw error
-    } finally {
-      isLoading.value = false
     }
   }
 
   async function loadFromHandover(name: string, payload: string | ArrayBuffer) {
-    isLoading.value = true
     loadError.value = null
-
     try {
-      const newEngine = createJsonlEngine()
-      await newEngine.initMemory(name, payload)
-
-      engine.value = newEngine
-      metadata.value = {
-        name,
-        size: payload instanceof ArrayBuffer ? payload.byteLength : new TextEncoder().encode(payload).length,
-        type: 'handover',
-      }
+      const result = await engineApi.open('handover', { name, payload })
+      metadata.value = { name: result.name, size: result.size, type: result.type }
+      resetDerivedState()
     } catch (error) {
-      loadError.value = error instanceof Error ? error.message : 'Failed to load from handover'
+      trackError(error)
       throw error
-    } finally {
-      isLoading.value = false
     }
   }
 
-  function reset() {
-    if (engine.value) {
-      engine.value.dispose()
-      engine.value = null
-    }
-    metadata.value = null
+  /** Clears the source (worker-side) and all local metadata. */
+  async function reset() {
     loadError.value = null
+    await engineApi.closeSource()
+    metadata.value = null
+    resetDerivedState()
   }
 
   function getEngine(): JsonlEngine | null {
-    return engine.value
+    return engineApi.engine.value
   }
 
   return {
     metadata,
-    engine: computed(() => engine.value),
+    engine: computed(() => engineApi.engine.value),
     isLoading,
     loadError,
     hasFile,

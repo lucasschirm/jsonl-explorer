@@ -329,6 +329,21 @@ export const CLI_CONFIG = {
  *   error messages or protocol events.
  * - MemorySource: UTF-8 encode string or transfer ArrayBuffer
  *
+ * Lifecycle (main-thread worker client):
+ * - Exactly one engine/worker on the main thread (module singleton); a new
+ *   source init supersedes the old one: in-flight RPCs are rejected as
+ *   stale (SourceReplacedError) and the worker resets its source state.
+ * - Inits are serialized; a concurrent init fails with InitInProgressError.
+ * - Worker crashes are fatal and visible: pending RPCs reject,
+ *   onError fires, and recovery requires an explicit reset() which
+ *   terminates the dead worker and spawns a fresh one on the next RPC.
+ * - dispose() is graceful-then-hard: a 'dispose' RPC (worker cleans spool
+ *   artifacts) with a short grace, then terminate(). pagehide disposes the
+ *   engine; stale spool artifacts are re-cleaned at the next worker start.
+ * - Only scalars, row pages, and export chunks cross the postMessage
+ *   boundary; source bytes and offset/match indexes never enter Pinia or
+ *   Vue proxies (the engine handle is a shallowRef, never deep-reactive).
+ *
  * References: PLAN.md 4.2
  */
 

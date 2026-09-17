@@ -221,11 +221,14 @@ export type InitRequest = InitFileRequest | InitUrlRequest | InitMemoryRequest
 
 export interface InitResponse extends BaseResponse {
   ok: true
-  value: {
-    name: string
-    size: number
-    type: 'file' | 'url' | 'handover'
-  }
+  value: InitResult
+}
+
+/** Uniform value returned by every source init. */
+export interface InitResult {
+  name: string
+  size: number
+  type: 'file' | 'url' | 'handover'
 }
 
 // ============================================================================
@@ -302,11 +305,14 @@ export interface FilterCompleteEvent {
 
 export interface FilterResponse extends BaseResponse {
   ok: true
-  value: {
-    matchedRows: number
-    totalRows: number
-    generation: number
-  }
+  value: FilterResult
+}
+
+/** Result of a completed filter operation. */
+export interface FilterResult {
+  matchedRows: number
+  totalRows: number
+  generation: number
 }
 
 // ============================================================================
@@ -487,13 +493,19 @@ export type WorkerResponse =
   | RpcResponse<ExportCancelResponse['value']>
   | RpcResponse<DisposeResponse['value']>
 
-export type WorkerEvent =
+/**
+ * Events the engine delivers to the page (progress + completion).
+ * `UrlFallbackConfirmRequest` is interactive (the page answers with a
+ * `urlFallbackConfirm` response), so it is routed separately.
+ */
+export type EngineEvent =
   | IndexProgressEvent
   | IndexCompleteEvent
   | FilterProgressEvent
   | FilterCompleteEvent
   | UrlProgressEvent
-  | UrlFallbackConfirmRequest
+
+export type WorkerEvent = EngineEvent | UrlFallbackConfirmRequest
 
 // ============================================================================
 // Type Guards / Validators
@@ -582,11 +594,13 @@ export function isSuccessResponse<T>(response: RpcResponse<T>): response is Succ
  * Engine interface for the JSONL Explorer
  */
 export interface JsonlEngine {
-  initFile(file: File): Promise<void>
-  initUrl(url: string, headers?: Record<string, string>): Promise<void>
-  initMemory(name: string, payload: string | ArrayBuffer): Promise<void>
+  /** Operation id of the most recently started operation (cancel target). */
+  readonly activeOperationId: string | null
+  initFile(file: File): Promise<InitResult>
+  initUrl(url: string, options?: { headers?: Record<string, string>; pageOrigin?: string }): Promise<InitResult>
+  initMemory(name: string, payload: string | ArrayBuffer): Promise<InitResult>
   index(options?: { operationId: string }): Promise<void>
-  filter(options: { operationId: string; kind: 'text' | 'jq'; query: string }): Promise<void>
+  filter(options: { operationId: string; kind: 'text' | 'jq'; query: string }): Promise<FilterResult>
   getRows(options: { start: number; count: number; generation: number }): Promise<{ rows: RowData[]; generation: number; totalFiltered: number }>
   getLine(lineId: number): Promise<{ lineId: number; text: string; isEdited: boolean }>
   setEdit(lineId: number, text?: string): Promise<{ lineId: number; isEdited: boolean; newGeneration: number; filteredIndex?: number }>
@@ -595,7 +609,24 @@ export interface JsonlEngine {
   exportAck(token: string): Promise<void>
   exportCancel(token: string): Promise<void>
   cancel(operationId: string): Promise<void>
+  /**
+   * Drops the current source (and its spool artifacts) while keeping the
+   * worker alive for the next init.
+   */
+  clearSource(): Promise<void>
   dispose(): Promise<void>
-  onProgress(callback: (event: ProgressEvent) => void): () => void
+  /**
+   * Fatal recovery: terminates a dead/crashed worker and clears the fatal
+   * state; the next RPC spawns a fresh worker. Safe to call when healthy.
+   */
+  reset(): Promise<void>
+  onProgress(callback: (event: EngineEvent) => void): () => void
   onError(callback: (error: Error) => void): () => void
+  /**
+   * Consent relay for the in-memory fallback handshake. The first
+   * registered handler decides; with no handler the fallback is declined.
+   */
+  onUrlFallbackConfirm(
+    callback: (request: UrlFallbackConfirmRequest) => boolean | Promise<boolean>,
+  ): () => void
 }
