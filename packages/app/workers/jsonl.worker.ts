@@ -813,6 +813,13 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
   // last completed filter's matched rows (R3 replace semantics).
   const totalFiltered = filterEngine.matchCount()
 
+  // The row loop interleaves with other handlers at every read, so a view
+  // change (filter commit, edit, index commit) can land MID-WINDOW. A mixed
+  // window (first half of one mapping, second half of another) must never
+  // be sent: report STALE_GENERATION and let the client retry against the
+  // current view.
+  const startGeneration = currentGeneration
+
   const start = request.start
   const count = request.count
   const end = Math.min(start + count, totalFiltered)
@@ -838,6 +845,16 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
       isEdited: false,
       byteLength: length,
     })
+  }
+
+  if (currentGeneration !== startGeneration) {
+    const response = createErrorResponse(
+      request.requestId,
+      'STALE_GENERATION',
+      'The view changed while fetching rows; retry against the current view',
+    )
+    self.postMessage(response)
+    return
   }
 
   const response = createSuccessResponse(request.requestId, {

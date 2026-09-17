@@ -13,7 +13,7 @@ import {
   resetRowCacheLimitsForTests,
 } from '~/stores/rows'
 import type { RowData } from '@jsonl-explorer/shared'
-import { FakeWorker, success } from '../helpers/fakeWorker'
+import { FakeWorker, success, failure } from '../helpers/fakeWorker'
 
 interface PostedOp {
   type: string
@@ -187,6 +187,36 @@ describe('row window store (TSK0021)', () => {
     expect(rowStore.rowCount).toBe(2)
     expect(rowStore.rowForDisplay(0)?.lineId).toBe(4)
     expect(rowStore.rowForDisplay(1)?.lineId).toBe(9)
+  })
+
+  it('retries silently when the worker refuses a mixed window (STALE_GENERATION)', async () => {
+    await initSource()
+    rowStore.ensureWindow(0, 4)
+    await waitGetRows(1)
+
+    // The view changed mid-fetch: the worker refused to send a possibly
+    // mixed window. The store must NOT surface this as a load error and
+    // must re-fetch against the current view.
+    const first = getRowsOps()[0]!
+    worker.emit(failure(first.requestId!, 'STALE_GENERATION', 'The view changed while fetching rows; retry against the current view'))
+
+    // A second window request goes out on its own (no user action).
+    await vi.waitFor(() => expect(getRowsOps().length).toBe(2))
+    expect(rowStore.loadError).toBeNull()
+
+    const retry = getRowsOps()[1]!
+    worker.emit(
+      success(retry.requestId!, {
+        rows: spanRows(0, 5),
+        generation: 0,
+        totalFiltered: 10,
+      }),
+    )
+    await settle()
+    expect(rowStore.loadError).toBeNull()
+    expect(rowStore.rowCount).toBe(5)
+    expect(rowStore.rowForDisplay(0)?.lineId).toBe(1)
+    expect(rowStore.rowForDisplay(4)?.lineId).toBe(5)
   })
 
   it('adopts a newer generation from the response and applies its rows', async () => {

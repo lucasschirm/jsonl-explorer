@@ -46,6 +46,7 @@ pnpm test:e2e
 │  ├─ cli/                   # jsonlex CLI (fastify + tsup)
 │  └─ shared/                # Shared types & handover protocol
 ├─ e2e/                      # Playwright E2E tests
+├─ docs/                     # Internal notes (perf baselines)
 └─ .github/workflows/        # CI/CD
 ```
 

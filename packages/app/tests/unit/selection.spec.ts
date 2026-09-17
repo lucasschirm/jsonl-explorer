@@ -148,6 +148,59 @@ describe('selection transitions (TSK0023)', () => {
     expect(selectionStore.activeDisplayIndex).toBe(0)
   })
 
+  it('preserves the multi-row selection across filter and clear (TSK0029)', async () => {
+    await initSource()
+    emitIndexComplete(4, 1)
+    await nextTick()
+
+    // Select lines 1, 2 and 4; make line 1 active (active != selected).
+    selectionStore.activate(1, 0)
+    selectionStore.add(1)
+    selectionStore.add(2)
+    selectionStore.add(4)
+    expect(selectionStore.count).toBe(3)
+
+    // A filter keeps only line 2: the active row (1) is filtered out.
+    const { useFilterStore } = await import('~/stores/filter')
+    const filterStore = useFilterStore()
+    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2, partial: false }
+    await nextTick()
+    await vi.waitFor(() => expect(rowStore.generation).toBe(2))
+    await vi.waitFor(() => expect(postedOps('linePosition').length).toBe(1))
+    answerLast('linePosition', { lineId: 1, visible: false, displayIndex: null, generation: 2 })
+
+    // The active row is replaced/cleared — but the SELECTION SET is
+    // untouched: hidden rows stay selected.
+    await vi.waitFor(() => expect(selectionStore.activeLineId).toBeNull())
+    expect(selectionStore.count).toBe(3)
+    expect(selectionStore.has(1)).toBe(true)
+    expect(selectionStore.has(2)).toBe(true)
+    expect(selectionStore.has(4)).toBe(true)
+
+    // Clear the filter: the full view returns and the hidden selected
+    // rows become visible again.
+    filterStore.result = { matchedRows: 4, totalRows: 4, generation: 3, partial: false }
+    await nextTick()
+    await vi.waitFor(() => expect(rowStore.generation).toBe(3))
+
+    rowStore.ensureWindow(0, 3)
+    await vi.waitFor(() => expect(postedOps('getRows').length).toBe(1))
+    answerLast('getRows', {
+      rows: [makeRow(0, 1, 'a'), makeRow(1, 2, 'b'), makeRow(2, 3, 'c'), makeRow(3, 4, 'd')],
+      generation: 3,
+      totalFiltered: 4,
+    })
+    await vi.waitFor(() => expect(rowStore.rowCount).toBe(4))
+
+    expect(selectionStore.count).toBe(3)
+    expect(rowStore.displayIndexForLine(1)).toBe(0)
+    expect(rowStore.displayIndexForLine(4)).toBe(3)
+    // Auto-selection re-activates the first visible row (line 1, which is
+    // also still selected).
+    await vi.waitFor(() => expect(selectionStore.activeLineId).toBe(1))
+    expect(selectionStore.activeDisplayIndex).toBe(0)
+  })
+
   it('clears the selection for a zero-result filter', async () => {
     await initSource()
     emitIndexComplete(4, 1)

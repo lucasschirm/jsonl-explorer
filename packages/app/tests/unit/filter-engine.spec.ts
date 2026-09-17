@@ -231,6 +231,36 @@ describe('FilterEngine edit overrides (TSK0026)', () => {
     expect(res2.matchedRows).toBe(1)
     expect(engine.rowAt(0)).toBe(0)
   })
+
+  it('edits flip row membership across reruns, in both directions (TSK0029)', async () => {
+    const src = ['{"k":"base"}', '{"k":"base"}']
+    const edits = new Map<number, string>() // mutated across reruns
+    const { engine } = makeEngine(src, { edits })
+
+    // No edits: the needle matches nothing.
+    let res = await engine.filter('text', 'needle')
+    expect(res.matchedRows).toBe(0)
+
+    // Edit row 1 in: the rerun admits it.
+    edits.set(1, '{"k":"needle"}')
+    res = await engine.filter('text', 'needle')
+    expect(res.matchedRows).toBe(1)
+    expect(engine.rowAt(0)).toBe(0)
+
+    // Edit row 2 in as well: both, in source order.
+    edits.set(2, '{"k":"needle-2"}')
+    res = await engine.filter('text', 'needle')
+    expect(res.matchedRows).toBe(2)
+    expect(engine.rowAt(0)).toBe(0)
+    expect(engine.rowAt(1)).toBe(1)
+
+    // Remove row 1's edit (back to source text): it leaves the view,
+    // and the survivor keeps a stable source lineId.
+    edits.delete(1)
+    res = await engine.filter('text', 'needle')
+    expect(res.matchedRows).toBe(1)
+    expect(engine.rowAt(0)).toBe(1)
+  })
 })
 
 describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {

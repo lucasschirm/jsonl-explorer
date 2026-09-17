@@ -3,7 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { useFilterStore } from '~/stores/filter'
 import { ENGINE_DEFAULTS } from '~/engine/config/adr'
-import type { RowData } from '@jsonl-explorer/shared'
+import { EngineRpcError } from '~/engine/workerClient'
+import { ErrorCode, type RowData } from '@jsonl-explorer/shared'
 
 // Module-level (not const) so tests can exercise eviction with small
 // budgets; production always runs with the ENGINE_DEFAULTS values.
@@ -168,6 +169,13 @@ export const useRowStore = defineStore('rows', () => {
             generation: requestGeneration,
           })
         } catch (error) {
+          // A view change landed mid-fetch and the worker refused to send
+          // a possibly-mixed window. Not an error state: re-fetch against
+          // the current view (the generation watch has adopted it, or the
+          // next response will carry it).
+          if (error instanceof EngineRpcError && error.code === ErrorCode.STALE_GENERATION) {
+            continue
+          }
           loadError.value = error instanceof Error ? error.message : 'Failed to load rows'
           break
         }
