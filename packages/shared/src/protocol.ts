@@ -295,6 +295,8 @@ export interface FilterProgressEvent extends BaseProgressEvent {
   type: 'filterProgress'
   matchedRows: number
   scannedRows: number
+  /** Committed rows at scan start (the scan's horizon). */
+  totalRows: number
 }
 
 export interface FilterCompleteEvent {
@@ -307,6 +309,14 @@ export interface FilterCompleteEvent {
   durationMs: number
   errorCount?: number
   errorSummary?: string
+  /**
+   * Worker generation after this (automatic) rerun. Emitted when indexing
+   * completes and the worker reruns the latest filter over the full row
+   * set — no RPC response is attached to it.
+   */
+  generation: number
+  /** False for completion reruns (indexing is done); see FilterResult. */
+  partial: boolean
 }
 
 export interface FilterResponse extends BaseResponse {
@@ -319,6 +329,13 @@ export interface FilterResult {
   matchedRows: number
   totalRows: number
   generation: number
+  /**
+   * True when the scan covered only the rows committed at scan start
+   * (indexing still in flight). The result is a valid view of that
+   * snapshot; the worker reruns the latest query automatically when
+   * indexing completes and announces it with a `filterComplete` event.
+   */
+  partial: boolean
 }
 
 // ============================================================================

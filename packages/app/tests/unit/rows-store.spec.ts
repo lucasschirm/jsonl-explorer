@@ -153,7 +153,7 @@ describe('row window store (TSK0021)', () => {
     await waitGetRows(1)
 
     // A filter completes while the window is in flight: generation bumps.
-    filterStore.result = { matchedRows: 2, totalRows: 10, generation: 3 }
+    filterStore.result = { matchedRows: 2, totalRows: 10, generation: 3, partial: false }
     await settle()
 
     // An OLD response (gen 0, from before the filter) arrives late: it
@@ -260,7 +260,7 @@ describe('row window store (TSK0021)', () => {
     await settle()
     expect(rowStore.rowCount).toBe(3)
 
-    filterStore.result = { matchedRows: 1, totalRows: 10, generation: 2 }
+    filterStore.result = { matchedRows: 1, totalRows: 10, generation: 2, partial: false }
     await settle()
     expect(rowStore.generation).toBe(2)
     expect(rowStore.rowCount).toBe(0)

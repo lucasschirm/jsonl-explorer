@@ -13,7 +13,13 @@ Enter any string to perform a case-sensitive literal substring match across all 
 
 - Press `Enter` or click the search icon to execute
 - No live filtering — explicit action required
-- Matches are highlighted in results
+- Matching is per-row: a query never spans two rows
+- Blank rows are rows too — they match only the empty query
+- While a URL is still downloading/indexing, results are labeled
+  **partial** and are automatically re-run over the full file when
+  indexing completes — no need to search again
+- Cancellation (stop button or a new search) keeps the previous view
+  until the new result is fully built
 
 ## jq Filter
 

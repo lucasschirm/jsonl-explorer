@@ -65,6 +65,8 @@ import {
 } from '../engine/spool/index.js'
 import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
 import type { ScanProgress, ScanResult } from '../engine/scanner.js'
+import { FilterCancelledError, FilterEngine } from '../engine/filter.js'
+import type { FilterEngineOptions } from '../engine/filter.js'
 import { offsetToNumber } from '../engine/indexer.js'
 import { ENGINE_DEFAULTS } from '../engine/config/adr.js'
 import { escapeForSingleLine } from '../utils/rowPreview.js'
@@ -95,12 +97,6 @@ export type {
 } from '@jsonl-explorer/shared'
 
 // ============================================================================
-// Constants
-// ============================================================================
-
-const PROGRESS_INTERVAL_ROWS = 1000
-
-// ============================================================================
 // Source State
 // ============================================================================
 
@@ -128,6 +124,9 @@ async function resetSourceState(): Promise<void> {
   activeIndexer = null
   activeDeclaredBytes = undefined
   exportStates.clear()
+  editOverrides.clear()
+  indexComplete = false
+  rerunSeq = 0
   currentGeneration = 0
 }
 
@@ -321,205 +320,6 @@ class Indexer {
 }
 
 // ============================================================================
-// Filter Engine
-// ============================================================================
-
-interface FilterState {
-  kind: 'text' | 'jq'
-  query: string
-  jqProgram: any | null
-  matchedRows: Uint32Array
-  matchedCount: number
-  operationId: string | null
-  cancelled: boolean
-}
-
-class FilterEngine {
-  private indexer: Indexer
-  private source: JsonlSource
-  private state: FilterState
-  private lastProgressTime = 0
-  private lastProgressRows = 0
-  /**
-   * False until a filter completes: the view is the UNFILTERED identity
-   * (display index i == row i). A filter that matches nothing is still a
-   * filtered (empty) view — the flag, not the count, disambiguates.
-   */
-  private hasFilter = false
-
-  constructor(indexer: Indexer, source: JsonlSource) {
-    this.indexer = indexer
-    this.source = source
-    this.state = {
-      kind: 'text',
-      query: '',
-      jqProgram: null,
-      matchedRows: new Uint32Array(1024),
-      matchedCount: 0,
-      operationId: null,
-      cancelled: false,
-    }
-  }
-
-  /** True once a filter completed; false = unfiltered identity view. */
-  isFiltered(): boolean {
-    return this.hasFilter
-  }
-
-  /** Row count of the current view (all committed rows when unfiltered). */
-  matchCount(): number {
-    return this.hasFilter ? this.state.matchedCount : this.indexer.getCommittedRows()
-  }
-
-  /** Map a display index to its source row index (identity when unfiltered). */
-  rowAt(displayIndex: number): number {
-    if (!this.hasFilter) return displayIndex
-    return this.state.matchedRows[displayIndex] ?? 0
-  }
-
-  /**
-   * Display index of a stable source line in the CURRENT view, or null
-   * when it is not part of the view (filtered out, or past the committed
-   * rows while indexing). O(log n) on the matched snapshot.
-   */
-  positionOfLine(lineId: number): number | null {
-    const row = lineId - 1
-    if (row < 0) return null
-    if (!this.hasFilter) {
-      return row < this.indexer.getCommittedRows() ? row : null
-    }
-    const rank = binarySearchRow(this.state.matchedRows, this.state.matchedCount, row)
-    return rank === -1 ? null : rank
-  }
-
-  setOperationId(operationId: string): void {
-    this.state.operationId = operationId
-  }
-
-  cancel(): void {
-    this.state.cancelled = true
-  }
-
-  async filter(kind: 'text' | 'jq', query: string): Promise<{ matchedRows: number; totalRows: number }> {
-    this.state.kind = kind
-    this.state.query = query
-    this.state.cancelled = false
-    this.state.matchedCount = 0
-
-    if (kind === 'jq') {
-      try {
-        const jqModule = await import('jq-web')
-        this.state.jqProgram = await jqModule.compile(query)
-      } catch (error) {
-        throw new Error(`Invalid jq program: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    } else {
-      this.state.jqProgram = null
-    }
-
-    const totalRows = this.indexer.getCommittedRows()
-    this.ensureCapacity(totalRows)
-
-    let matchedCount = 0
-    let errorCount = 0
-
-    for (let i = 0; i < totalRows && !this.state.cancelled; i++) {
-      const lineStart = this.indexer.getLineStart(i)
-      const lineEnd = this.indexer.getLineEnd(i)
-      const length = lineEnd - lineStart + 1
-
-      if (length <= 0) continue
-
-      const lineBytes = await this.source.readRange(lineStart, length)
-      let matches = false
-
-      try {
-        if (kind === 'text') {
-          const text = new TextDecoder('utf-8', { fatal: true }).decode(lineBytes)
-          matches = text.includes(query)
-        } else {
-          const text = new TextDecoder('utf-8', { fatal: false }).decode(lineBytes)
-          const json = JSON.parse(text)
-          const results = this.state.jqProgram(json)
-          matches = results.some((r: any) => r !== false && r !== null && r !== undefined)
-        }
-      } catch (error) {
-        errorCount++
-        continue
-      }
-
-      if (matches) {
-        this.addMatch(i)
-        matchedCount++
-      }
-
-      if ((i + 1) % PROGRESS_INTERVAL_ROWS === 0 && this.state.operationId && this.shouldEmitProgress()) {
-        const event = {
-          ns: 'jsonl-explorer',
-          v: 1,
-          type: 'filterProgress',
-          operationId: this.state.operationId!,
-          progress: Math.min(100, ((i + 1) / totalRows) * 100),
-          matchedRows: matchedCount,
-          scannedRows: i + 1,
-        }
-        self.postMessage(event)
-      }
-    }
-
-    if (this.state.cancelled) {
-      throw new Error('Filter cancelled')
-    }
-
-    // The view only becomes "filtered" on success: a failed/cancelled
-    // scan must not replace the previous view (identity or last filter).
-    this.hasFilter = true
-
-    return { matchedRows: matchedCount, totalRows }
-  }
-
-  private ensureCapacity(capacity: number): void {
-    if (this.state.matchedRows.length >= capacity) return
-    const newCapacity = Math.max(this.state.matchedRows.length * 2, capacity)
-    const newRows = new Uint32Array(newCapacity)
-    newRows.set(this.state.matchedRows)
-    this.state.matchedRows = newRows
-  }
-
-  private addMatch(rowIndex: number): void {
-    if (this.state.matchedCount >= this.state.matchedRows.length) {
-      const newCapacity = this.state.matchedRows.length * 2
-      const newRows = new Uint32Array(newCapacity)
-      newRows.set(this.state.matchedRows)
-      this.state.matchedRows = newRows
-    }
-    this.state.matchedRows[this.state.matchedCount] = rowIndex
-    this.state.matchedCount++
-  }
-
-  private shouldEmitProgress(): boolean {
-    const now = performance.now()
-    if (now - this.lastProgressTime >= 50) {
-      this.lastProgressTime = now
-      return true
-    }
-    return false
-  }
-
-  getMatchedRows(): Uint32Array {
-    return this.state.matchedRows.subarray(0, this.state.matchedCount)
-  }
-
-  getMatchedCount(): number {
-    return this.state.matchedCount
-  }
-
-  isCancelled(): boolean {
-    return this.state.cancelled
-  }
-}
-
-// ============================================================================
 // Export Engine
 // ============================================================================
 
@@ -549,6 +349,59 @@ let source: JsonlSource | null = null
 let indexer: Indexer | null = null
 let filterEngine: FilterEngine | null = null
 let currentGeneration = 0
+/** True once the current source's indexComplete event has been emitted. */
+let indexComplete = false
+/**
+ * Edited-row overrides (1-based lineId -> edited text). Populated by
+ * setEdit (TSK0030); the filter consults them so edited rows match their
+ * edited text, never the source bytes.
+ */
+const editOverrides = new Map<number, string>()
+/** Worker-generated operation IDs for automatic completion reruns. */
+let rerunSeq = 0
+
+/** Filter engine wiring shared by every (re)initialization. */
+const filterEngineOptions: FilterEngineOptions = {
+  postEvent: (event) => self.postMessage(event),
+  getEditOverride: (lineId) => editOverrides.get(lineId) ?? null,
+  isIndexComplete: () => indexComplete,
+}
+
+/**
+ * After indexComplete, rerun the latest filter over the full row set and
+ * announce the final result with a filterComplete event (no RPC response —
+ * the main thread already holds the partial result from the filter RPC).
+ * A cancelled/failed rerun keeps the previous result silently.
+ */
+async function maybeRerunFilter(): Promise<void> {
+  const engine = filterEngine
+  const active = engine?.getActiveQuery()
+  const sourceRef = source
+  if (!engine || !active || !sourceRef) return
+  rerunSeq++
+  const operationId = `filter-rerun-${rerunSeq}`
+  engine.setOperationId(operationId)
+  try {
+    const result = await engine.filter(active.kind, active.query)
+    // The source was replaced mid-scan: the result is stale; drop it.
+    if (filterEngine !== engine || source !== sourceRef) return
+    currentGeneration++
+    self.postMessage({
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'filterComplete' as const,
+      operationId,
+      matchedRows: result.matchedRows,
+      totalRows: result.totalRows,
+      durationMs: result.durationMs,
+      errorCount: result.errorCount,
+      generation: currentGeneration,
+      partial: result.partial,
+    })
+  } catch {
+    // Cancelled (new filter/cancel RPC) or failed: keep the previous view.
+  }
+}
 
 function createErrorResponse(requestId: string, code: ErrorCode, message: string, details?: Record<string, unknown>): WorkerResponse {
   return {
@@ -690,7 +543,7 @@ async function handleInitFile(request: InitFileRequest): Promise<void> {
   await resetSourceState()
   source = new FileSource(request.file)
   indexer = new Indexer(source)
-  filterEngine = new FilterEngine(indexer, source)
+  filterEngine = new FilterEngine(indexer, source, filterEngineOptions)
 
   const response = createSuccessResponse(request.requestId, {
     name: request.file.name,
@@ -721,7 +574,7 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
       const src = new SpoolSource(urlFileName(info.finalUrl), info.spool)
       source = src
       indexer = new Indexer(src)
-      filterEngine = new FilterEngine(indexer, src)
+      filterEngine = new FilterEngine(indexer, src, filterEngineOptions)
       activeIndexer = indexer
       activeDeclaredBytes = info.declaredBytes
     },
@@ -784,6 +637,8 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
       generation: currentGeneration,
     }
     self.postMessage(completeEvent)
+    indexComplete = true
+    void maybeRerunFilter()
 
     const response = createSuccessResponse(request.requestId, {
       name: result.name,
@@ -811,7 +666,7 @@ async function handleInitMemory(request: InitMemoryRequest): Promise<void> {
   await resetSourceState()
   source = new MemorySource(request.name, request.payload)
   indexer = new Indexer(source)
-  filterEngine = new FilterEngine(indexer, source)
+  filterEngine = new FilterEngine(indexer, source, filterEngineOptions)
 
   const size = await source.getSize()
   const response = createSuccessResponse(request.requestId, {
@@ -849,6 +704,8 @@ async function handleIndex(request: IndexRequest): Promise<void> {
       generation: currentGeneration,
     }
     self.postMessage(event)
+    indexComplete = true
+    void maybeRerunFilter()
 
     const response = createSuccessResponse(request.requestId, {
       totalRows,
@@ -873,18 +730,21 @@ async function handleFilter(request: FilterRequest): Promise<void> {
   filterEngine.setOperationId(request.operationId)
 
   try {
-    const { matchedRows, totalRows } = await filterEngine.filter(request.kind, request.query)
+    const result = await filterEngine.filter(request.kind, request.query)
 
     currentGeneration++
 
     const response = createSuccessResponse(request.requestId, {
-      matchedRows,
-      totalRows,
+      matchedRows: result.matchedRows,
+      totalRows: result.totalRows,
       generation: currentGeneration,
+      partial: result.partial,
     })
     self.postMessage(response)
   } catch (error) {
-    const response = createErrorResponse(request.requestId, 'FILTER_FAILED', error instanceof Error ? error.message : String(error))
+    // Cancel keeps the previous view: typed FILTER_CANCELLED (R3), not an error.
+    const code = error instanceof FilterCancelledError ? 'FILTER_CANCELLED' : 'FILTER_FAILED'
+    const response = createErrorResponse(request.requestId, code, error instanceof Error ? error.message : String(error))
     self.postMessage(response)
   }
 }
@@ -933,20 +793,6 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
     totalFiltered,
   })
   self.postMessage(response)
-}
-
-/** Index of `row` in matchedRows[0..count) (ascending), or -1. */
-function binarySearchRow(rows: Uint32Array, count: number, row: number): number {
-  let lo = 0
-  let hi = count - 1
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    const value = rows[mid] ?? 0
-    if (value < row) lo = mid + 1
-    else if (value > row) hi = mid - 1
-    else return mid
-  }
-  return -1
 }
 
 /**

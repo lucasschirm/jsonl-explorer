@@ -212,7 +212,7 @@ describe('RowList (TSK0022)', () => {
     // A filter completes: the view shrinks to lineId 3 only, now at
     // display index 0. The SELECTION (stable lineId 3) must follow it —
     // no drift to "display index 2" (which no longer exists).
-    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2 }
+    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2, partial: false }
     await nextTick()
     await vi.waitFor(() => expect(getRowsOps().length).toBe(2))
     answerLast([makeRow(0, 3, 'r3')], 2, 1)

@@ -101,7 +101,7 @@ export class AutoWorker extends FakeWorker {
           : msg.type === 'initMemory'
             ? { name: msg.name ?? 'handover.jsonl', size: 33, type: 'handover' as const }
             : msg.type === 'filter'
-              ? { matchedRows: 3, totalRows: 10, generation: 1 }
+              ? { matchedRows: 3, totalRows: 10, generation: 1, partial: false }
               : msg.type === 'getRows'
                 ? { rows: [], generation: 1, totalFiltered: 3 }
                 : msg.type === 'dispose'

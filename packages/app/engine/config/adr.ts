@@ -599,6 +599,49 @@ export const ENGINE_DEFAULTS = {
  */
 
 // ============================================================================
+// LITERAL TEXT FILTERING (TSK0026)
+// ============================================================================
+/**
+ * Literal text filtering (TSK0026):
+ * - The match index is a SEPARATE structure from the source index:
+ *   matched source lineIds (Uint32Array, ascending) plus a count. Memory is
+ *   bounded by the number of matched row IDs — never by parsed rows or
+ *   decoded text. The previous view stays served while a scan runs.
+ * - A scan builds its result OFF-TO-SIDE (a local buffer) and swaps it in
+ *   atomically at the end (kind, query, program, match IDs, and count all
+ *   flip together). A cancelled or failed scan discards its buffer: the
+ *   previous view is untouched, and getRows/linePosition keep working.
+ * - Cancellation is cooperative and token-based: each filter() bumps a
+ *   scan token; the in-flight scan checks `token === current` per row, so a
+ *   newer filter or an explicit cancel supersedes the old scan. The
+ *   superseded RPC is answered FILTER_CANCELLED — a typed outcome, not an
+ *   error (the store returns to idle and keeps the previous result).
+ * - Rows are matched on their decoded DISPLAY text (the same bytes the UI
+ *   shows: CR-stripped, terminal LF excluded, non-fatal UTF-8). Matching is
+ *   per-row and case-sensitive (literal `includes`); a query can never
+ *   span two rows. Blank rows are real rows: they match the empty query
+ *   only.
+ * - Edited rows (TSK0030 owns the edit store) match against their OVERRIDE
+ *   text through an injected lookup — the scan never reads source bytes for
+ *   overridden rows. The worker keeps the override map (empty until
+ *   TSK0030 populates it via setEdit); the engine stays agnostic.
+ * - While the index is still building (URL streaming), a filter over the
+ *   committed snapshot is valid but PARTIAL: FilterResult and the
+ *   filterComplete event carry `partial`. The worker auto-reruns the
+ *   latest query at indexComplete (its own operationId, a filterComplete
+ *   event — no RPC in flight) so the user ends on the final result without
+ *   re-typing. The store adopts a filterComplete event only if its
+ *   generation is newer than the stored result (per-source generations are
+ *   monotonic; a new source resets the filter state).
+ * - Progress events are throttled to one per PROGRESS_INTERVAL_ROWS rows
+ *   (and always at the end), and carry `totalRows` so the UI can render a
+ *   determinate bar.
+ *
+ * References: PLAN.md 4.1/4.2 (search), TSK0012 (source index),
+ *           TSK0021 (row windows, display mapping)
+ */
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 export const ADR_CONFIG = {

@@ -156,7 +156,7 @@ describe('filter store', () => {
 
     const result = await filterStore.runFilter('a', 'text')
 
-    expect(result).toEqual({ matchedRows: 3, totalRows: 10, generation: 1 })
+    expect(result).toEqual({ matchedRows: 3, totalRows: 10, generation: 1, partial: false })
     expect(filterStore.matchedRows).toBe(3)
     expect(filterStore.totalRows).toBe(10)
     expect(filterStore.generation).toBe(1)
@@ -181,6 +181,7 @@ describe('filter store', () => {
       progress: 0,
       matchedRows: 99,
       scannedRows: 99,
+      totalRows: 10,
     })
     expect(filterStore.progress).toBeNull()
     expect(filterStore.matchedRows).toBe(3)
@@ -206,6 +207,7 @@ describe('filter store', () => {
       progress: 40,
       matchedRows: 2,
       scannedRows: 5,
+      totalRows: 10,
     })
     expect(filterStore.progress).toEqual({ scannedRows: 5, matchedRows: 2 })
 

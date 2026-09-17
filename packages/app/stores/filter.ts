@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
+import { EngineRpcError } from '~/engine/workerClient'
 import type { FilterResult } from '@jsonl-explorer/shared'
 
 export type FilterKind = 'text' | 'jq'
@@ -17,8 +18,17 @@ function nextFilterOperationId(): string {
  * Filter state store.
  *
  * Tracks the active query and the worker's filter result (matched/total
- * counts, generation) as scalars. Row pages are always fetched on demand
- * through the engine (`getRows`) and never cached here.
+ * counts, generation, partiality) as scalars. Row pages are always fetched
+ * on demand through the engine (`getRows`) and never cached here.
+ *
+ * Result lifecycle (R3 — a failed/cancelled filter must never leave a
+ * half-replaced view):
+ * - A successful RPC response sets `result`.
+ * - `FILTER_CANCELLED` returns to idle and KEEPS the previous result.
+ * - Any other failure sets `error` and keeps the previous result.
+ * - Automatic completion reruns (worker-side, after indexing finishes)
+ *   arrive as `filterComplete` events and upgrade a partial result to the
+ *   final one; stale events (older generation) are ignored.
  */
 export const useFilterStore = defineStore('filter', () => {
   const engineApi = useJsonlEngine()
@@ -34,6 +44,27 @@ export const useFilterStore = defineStore('filter', () => {
   const totalRows = computed(() => result.value?.totalRows ?? 0)
   const generation = computed(() => result.value?.generation ?? 0)
   const isRunning = computed(() => status.value === 'running')
+  /** True while `result` covers only the committed snapshot (indexing live). */
+  const isPartial = computed(() => result.value?.partial ?? false)
+
+  // Completion reruns have no RPC in flight: the worker emits
+  // filterComplete after rerunning the latest query at index completion.
+  // Adopt only newer generations (generation is per-source; resetFilterState
+  // clears result on source replacement, so no cross-source comparison).
+  const unsubscribeComplete = engineApi.getEngine().onProgress((event) => {
+    if (event.type !== 'filterComplete') return
+    const current = result.value?.generation ?? 0
+    if (event.generation <= current) return
+    result.value = {
+      matchedRows: event.matchedRows,
+      totalRows: event.totalRows,
+      generation: event.generation,
+      partial: event.partial,
+    }
+    if (status.value === 'running') {
+      status.value = 'idle'
+    }
+  })
 
   function trackProgressFor(operationId: string): void {
     unsubscribeProgress?.()
@@ -50,7 +81,12 @@ export const useFilterStore = defineStore('filter', () => {
     progress.value = null
   }
 
-  async function runFilter(newQuery: string, newKind: FilterKind): Promise<FilterResult> {
+  /**
+   * Runs a filter and returns its result. A cancelled filter resolves to
+   * the previous result (possibly null) with status back to idle — it is
+   * not an error and never rethrows.
+   */
+  async function runFilter(newQuery: string, newKind: FilterKind): Promise<FilterResult | null> {
     kind.value = newKind
     query.value = newQuery
     status.value = 'running'
@@ -63,6 +99,12 @@ export const useFilterStore = defineStore('filter', () => {
       status.value = 'idle'
       return filterResult
     } catch (err) {
+      // A cancel is not an error: back to idle, previous result kept.
+      if (err instanceof EngineRpcError && err.code === 'FILTER_CANCELLED') {
+        status.value = 'idle'
+        error.value = null
+        return result.value
+      }
       status.value = 'error'
       error.value = err instanceof Error ? err.message : 'Filter failed'
       throw err
@@ -99,6 +141,7 @@ export const useFilterStore = defineStore('filter', () => {
     totalRows,
     generation,
     isRunning,
+    isPartial,
     runFilter,
     cancelFilter,
     resetFilterState,

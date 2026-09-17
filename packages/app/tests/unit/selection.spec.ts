@@ -106,7 +106,7 @@ describe('selection transitions (TSK0023)', () => {
     // A filter completes: only line 3 survives.
     const { useFilterStore } = await import('~/stores/filter')
     const filterStore = useFilterStore()
-    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2 }
+    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2, partial: false }
     await nextTick()
     await vi.waitFor(() => expect(rowStore.generation).toBe(2))
 
@@ -129,7 +129,7 @@ describe('selection transitions (TSK0023)', () => {
 
     const { useFilterStore } = await import('~/stores/filter')
     const filterStore = useFilterStore()
-    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2 }
+    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2, partial: false }
     await nextTick()
     await vi.waitFor(() => expect(rowStore.generation).toBe(2))
 
@@ -156,7 +156,7 @@ describe('selection transitions (TSK0023)', () => {
 
     const { useFilterStore } = await import('~/stores/filter')
     const filterStore = useFilterStore()
-    filterStore.result = { matchedRows: 0, totalRows: 4, generation: 2 }
+    filterStore.result = { matchedRows: 0, totalRows: 4, generation: 2, partial: false }
     await nextTick()
     await vi.waitFor(() => expect(rowStore.generation).toBe(2))
 
@@ -174,13 +174,13 @@ describe('selection transitions (TSK0023)', () => {
 
     const { useFilterStore } = await import('~/stores/filter')
     const filterStore = useFilterStore()
-    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2 }
+    filterStore.result = { matchedRows: 1, totalRows: 4, generation: 2, partial: false }
     await nextTick()
     await vi.waitFor(() => expect(rowStore.generation).toBe(2))
     await vi.waitFor(() => expect(postedOps('linePosition').length).toBe(1))
 
     // A SECOND view change lands before the first answer (generation 3).
-    filterStore.result = { matchedRows: 2, totalRows: 4, generation: 3 }
+    filterStore.result = { matchedRows: 2, totalRows: 4, generation: 3, partial: false }
     await nextTick()
     await vi.waitFor(() => expect(rowStore.generation).toBe(3))
     await vi.waitFor(() => expect(postedOps('linePosition').length).toBe(2))
@@ -224,7 +224,7 @@ describe('selection transitions (TSK0023)', () => {
 
     const { useFilterStore } = await import('~/stores/filter')
     const filterStore = useFilterStore()
-    filterStore.result = { matchedRows: 5, totalRows: 12, generation: 2 }
+    filterStore.result = { matchedRows: 5, totalRows: 12, generation: 2, partial: false }
     await vi.waitFor(() => expect(rowStore.totalFiltered).toBe(5))
   })
 })
