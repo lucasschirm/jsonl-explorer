@@ -28,7 +28,8 @@ starts from a clean engine.
 - **Virtual scrolling** — Only visible rows are rendered, enabling multi-GB file support
 - **Row numbers** — Original 1-based line numbers from the source file
 - **Preview** — Each row shows a truncated, single-line escaped preview
-- **Selection** — Click any row to view its full JSON in the right panel
+- **Selection** — Click any row to view its full JSON in the right panel. The highlight follows the row's stable source line id, so it stays on the same row even when a filter changes row positions
+- **Placeholders** — Rows whose batched window is still in flight show a short placeholder bar, so the list never blocks or reflows while data loads
 - **Status bar** — Shows total and filtered row counts
 
 ### How rows are loaded

@@ -265,6 +265,9 @@ describe('row window store (TSK0021)', () => {
     expect(rowStore.generation).toBe(2)
     expect(rowStore.rowCount).toBe(0)
     expect(rowStore.rowForDisplay(0)).toBeNull()
+    // The view count follows the filter result (event-driven), so the
+    // list re-derives its window instead of getting stuck at 0.
+    expect(rowStore.totalFiltered).toBe(1)
   })
 
   it('invalidates on an index-commit event (new rows exist)', async () => {
@@ -288,6 +291,8 @@ describe('row window store (TSK0021)', () => {
     await settle()
     expect(rowStore.generation).toBe(7)
     expect(rowStore.rowCount).toBe(0)
+    // The committed row count comes from the event, not from a fetch.
+    expect(rowStore.totalFiltered).toBe(99)
   })
 
   it('reset() clears everything (new source)', async () => {

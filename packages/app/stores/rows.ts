@@ -79,7 +79,6 @@ export const useRowStore = defineStore('rows', () => {
     lineToDisplay.clear()
     rowBytes.clear()
     cachedBytes = 0
-    totalFiltered.value = 0
     desired.start = null
     desired.end = null
     version.value += 1
@@ -89,6 +88,7 @@ export const useRowStore = defineStore('rows', () => {
   function reset(): void {
     generation.value = 0
     clearCache()
+    totalFiltered.value = 0
     loadError.value = null
   }
 
@@ -209,13 +209,16 @@ export const useRowStore = defineStore('rows', () => {
    * posting duplicate RPCs.
    */
   function ensureWindow(start: number, end: number): void {
-    if (start > end || start < 0) return
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0) return
     desired.start = desired.start === null ? start : Math.min(desired.start, start)
     desired.end = desired.end === null ? end : Math.max(desired.end, end)
     if (!loopRunning) void fetchLoop()
   }
 
-  /** The cached row for a display index (null when not yet fetched). */
+  /** The cached row for a display index (null when not yet fetched).
+   *  Note: displayToLine is a plain Map — callers that must re-render when
+   *  a pending index gets a row should also read `version` (the re-render
+   *  signal) in their own reactive scope. */
   function rowForDisplay(displayIndex: number): RowData | null {
     const lineId = displayToLine.get(displayIndex)
     if (lineId === undefined) return null
@@ -235,14 +238,22 @@ export const useRowStore = defineStore('rows', () => {
   }
 
   // A new filter (or its reset) changes the display->line mapping: the
-  // filter store's generation is the worker's, so follow it directly.
+  // filter store's generation is the worker's, so follow it directly. A
+  // completed filter also tells us the view size immediately (the filter
+  // result carries matchedRows), so the list count never lags.
   watch(
     () => filterStore.generation,
-    (gen) => adoptGeneration(gen),
+    (gen) => {
+      adoptGeneration(gen)
+      if (gen > 0) {
+        totalFiltered.value = filterStore.result?.matchedRows ?? 0
+      }
+    },
   )
 
-  // Index commits bump the worker generation (new rows exist): invalidate.
-  // Re-subscribe whenever the engine instance changes (new worker).
+  // Index commits bump the worker generation (new rows exist): invalidate
+  // and adopt the committed row count from the event. Re-subscribe whenever
+  // the engine instance changes (new worker).
   watch(
     () => engineApi.engine.value,
     (engine) => {
@@ -250,7 +261,10 @@ export const useRowStore = defineStore('rows', () => {
       unsubscribeIndexComplete = null
       if (!engine) return
       unsubscribeIndexComplete = engine.onProgress((event) => {
-        if (event.type === 'indexComplete') adoptGeneration(event.generation)
+        if (event.type === 'indexComplete') {
+          adoptGeneration(event.generation)
+          totalFiltered.value = event.totalRows
+        }
       })
     },
     { immediate: true },

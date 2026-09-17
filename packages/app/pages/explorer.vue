@@ -7,8 +7,11 @@ import { useUrlRecovery } from '~/composables/useUrlRecovery'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { decideUrlInput } from '~/utils/urlIntake'
 import LoadingPanel from '~/components/loading/LoadingPanel.vue'
+import RowList from '~/components/explorer/RowList.vue'
+import { useRowStore } from '~/stores/rows'
 
 const router = useRouter()
+const rowStore = useRowStore()
 const route = useRoute()
 const fileStore = useFileStore()
 const toastStore = useToastStore()
@@ -188,22 +191,14 @@ async function resetFile() {
           </div>
         </div>
 
-        <!-- Row list - placeholder -->
-        <div class="flex-1 overflow-y-auto p-3">
-          <div class="text-center text-base-content/50 py-8">
-            <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <p class="text-sm">Row list will appear here</p>
-            <p class="text-xs mt-1">Select a file to begin exploring</p>
-          </div>
-        </div>
+        <!-- Row list (TSK0022): virtualized, batched windows, bounded DOM -->
+        <RowList />
 
         <!-- Status bar -->
         <div class="p-3 border-t border-base-300 bg-base-200 text-xs text-base-content/70">
           <div class="flex items-center justify-between">
             <span>Total: <span class="font-mono">{{ engineApi.totalRows }}</span> rows</span>
-            <span>Filtered: <span class="font-mono">0</span> rows</span>
+            <span>Filtered: <span class="font-mono" data-testid="filtered-count">{{ rowStore.totalFiltered }}</span> rows</span>
           </div>
         </div>
       </aside>

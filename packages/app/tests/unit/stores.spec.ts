@@ -262,4 +262,23 @@ describe('selection store', () => {
     selectionStore.resetSelection()
     expect(selectionStore.isEmpty).toBe(true)
   })
+
+  it('activate() tracks the active line id independently of the selection set', () => {
+    const selectionStore = useSelectionStore()
+    expect(selectionStore.activeLineId).toBeNull()
+
+    selectionStore.activate(42)
+    expect(selectionStore.activeLineId).toBe(42)
+    // Activating is not the same as selecting (list highlight vs. set).
+    expect(selectionStore.has(42)).toBe(false)
+
+    selectionStore.activate(7)
+    expect(selectionStore.activeLineId).toBe(7)
+
+    // resetSelection() clears the active row too (new source / upload another).
+    selectionStore.add(1)
+    selectionStore.resetSelection()
+    expect(selectionStore.activeLineId).toBeNull()
+    expect(selectionStore.isEmpty).toBe(true)
+  })
 })

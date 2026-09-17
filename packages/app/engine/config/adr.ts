@@ -464,6 +464,42 @@ export const ENGINE_DEFAULTS = {
  */
 
 // ============================================================================
+// VIRTUALIZED ROW LIST (TSK0022)
+// ============================================================================
+/**
+ * Virtualized row list (TSK0022):
+ * - Rows are rendered through @tanstack/vue-virtual with a FIXED row
+ *   height (28 px): previews are single-line (truncated, C0/DEL
+ *   pre-escaped by the worker), so no per-row measurement exists and the
+ *   virtualizer never measures DOM nodes.
+ * - The window handed to the row store is the virtualizer's
+ *   getVirtualItems() range, i.e. viewport PLUS overscan (the core's raw
+ *   `range` excludes overscan; handing it out would leave overscanned
+ *   rows as permanent placeholders). The store coalesces it into one
+ *   in-flight RPC (TSK0021).
+ * - The vue wrapper only unrefs the TOP-LEVEL options object, so the
+ *   options are passed as a `computed` (with count unwrapped inside);
+ *   a plain object would hand the core a Ref and break measurements.
+ * - The core only notifies on element/rect/scroll changes — never on a
+ *   count-only change — so RowList additionally watches the store's
+ *   totalFiltered/generation and re-derives the window on nextTick (the
+ *   wrapper's own options watch must have applied the new count first).
+ * - Placeholder flipping is driven by the row store's `version` signal
+ *   (read once in the list template): the display->line cache is a
+ *   plain Map, so renders of pending rows would otherwise track no
+ *   reactive state and never update when their rows arrive.
+ * - Row identity for highlight/selection is the STABLE lineId
+ *   (selection store's activeLineId), never a display index, so filter
+ *   changes cannot drift the highlighted row. The DOM node count stays
+ *   bounded by (viewport / rowHeight + 2 * overscan) for any file size.
+ * - `initialRect` prop: deterministic viewport for tests/embeds (happy-
+ *   dom measures 0x0); when set, element rect observation is replaced by
+ *   the fixed rect. Production leaves it unset (live ResizeObserver).
+ *
+ * References: PLAN.md 4.3 (row list), TSK0021 (window retrieval)
+ */
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 export const ADR_CONFIG = {

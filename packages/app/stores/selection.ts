@@ -10,12 +10,23 @@ import { computed, ref } from 'vue'
  */
 export const useSelectionStore = defineStore('selection', () => {
   const selected = ref<Set<number>>(new Set())
+  /**
+   * The row shown in the detail panel (and highlighted in the list).
+   * Keyed by lineId — the STABLE source id — so it never drifts when a
+   * filter changes display indices (TSK0022 acceptance).
+   */
+  const activeLineId = ref<number | null>(null)
 
   const count = computed(() => selected.value.size)
   const isEmpty = computed(() => selected.value.size === 0)
 
   function has(lineId: number): boolean {
     return selected.value.has(lineId)
+  }
+
+  /** Marks a row as active (detail panel + list highlight). */
+  function activate(lineId: number): void {
+    activeLineId.value = lineId
   }
 
   function toggle(lineId: number): void {
@@ -47,13 +58,16 @@ export const useSelectionStore = defineStore('selection', () => {
 
   function resetSelection(): void {
     selected.value = new Set()
+    activeLineId.value = null
   }
 
   return {
     selected,
+    activeLineId,
     count,
     isEmpty,
     has,
+    activate,
     toggle,
     add,
     remove,
