@@ -439,6 +439,11 @@ export const ENGINE_DEFAULTS = {
   // large" by the same standard. The worker rejects over-budget edits with
   // EDIT_TOO_LARGE; the main-thread store warns before sending one.
   editMaxBytes: 1 * 1024 * 1024,
+  // Export chunk cap (TSK0034): each exportNext response carries at most
+  // this many bytes of COMPLETE rows (a single row larger than the cap
+  // is emitted alone). With the ack gate, the worker-to-main queue holds
+  // at most one such chunk, keeping a slow consumer's backlog bounded.
+  exportChunkMaxBytes: 256 * 1024,
 } as const
 
 // ============================================================================

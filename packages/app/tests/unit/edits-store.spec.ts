@@ -91,6 +91,31 @@ describe('edits store: worker mirroring (TSK0030)', () => {
     expect(edits.usedBytes).toBe(0)
   })
 
+  it('an EXPORT_IN_PROGRESS rejection rejects typed (UI toasts it) and never mirrors', async () => {
+    const worker = new FakeWorker()
+    await openFile(worker)
+    const edits = useEditsStore()
+
+    // Seed one override so a leaked mirror would be detectable.
+    const pending1 = edits.setEdit(1, 'kept')
+    answerLast(worker, { lineId: 1, isEdited: true, newGeneration: 2 })
+    await pending1
+
+    const pending = edits.setEdit(2, 'during-export')
+    failLast(
+      worker,
+      'EXPORT_IN_PROGRESS',
+      'Edits are paused while an export is running. Finish or cancel the export first.',
+    )
+    await expect(pending).rejects.toThrow(
+      'Edits are paused while an export is running. Finish or cancel the export first.',
+    )
+
+    expect(edits.isEdited(2)).toBe(false)
+    expect(edits.get(2)).toBeUndefined()
+    expect(edits.get(1)).toBe('kept') // siblings untouched
+  })
+
   it('resetEdit posts a reset (no text) and removes the override', async () => {
     const worker = new FakeWorker()
     await openFile(worker)

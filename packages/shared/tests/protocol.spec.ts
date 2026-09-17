@@ -23,6 +23,9 @@ import {
   type WorkerRequest,
   type WorkerResponse,
   type WorkerEvent,
+  type RunJqRequest,
+  type RunJqResponse,
+  type ExportStartResponse,
 } from '../src/protocol.js'
 
 describe('Worker RPC Protocol', () => {
@@ -146,32 +149,64 @@ describe('Worker RPC Protocol', () => {
 
   describe('runJq (TSK0033 local jq search)', () => {
     it('validates a runJq request (document sent by value, no generation)', () => {
-      const request = {
-        ns: 'jsonl-explorer',
-        v: 1,
+      const request: RunJqRequest = {
         type: 'runJq',
         requestId: 'req-jq',
         lineId: 3,
         program: '.items[].id',
         text: '{"items":[{"id":1}]}',
-      } satisfies import('../src/protocol.js').RunJqRequest
-      expect(validateWorkerRequest(request)).toBe(true)
+      }
+      expect(validateWorkerRequest({ ...request, ns: 'jsonl-explorer', v: 1 })).toBe(true)
       // Staleness is caller-guarded: the request carries no generation.
       expect('generation' in request).toBe(false)
     })
 
     it('validates a runJq success response (outputs in emission order)', () => {
-      const response = {
-        ns: 'jsonl-explorer',
-        v: 1,
-        type: 'runJq',
-        requestId: 'req-jq',
-        ok: true,
-        value: { lineId: 3, outputs: [1, 2] },
-      } satisfies RpcResponse<import('../src/protocol.js').RunJqResponse['value']>
-      expect(validateWorkerResponse(response)).toBe(true)
-      const success = createSuccessResponse(response.requestId, { lineId: 3, outputs: [] })
+      // The runtime envelope carries the request `type`; the validator
+      // (like the existing tests) expects it on responses too.
+      expect(
+        validateWorkerResponse({
+          ns: 'jsonl-explorer',
+          v: 1,
+          type: 'runJq',
+          requestId: 'req-jq',
+          ok: true,
+          value: { lineId: 3, outputs: [1, 2] } satisfies RunJqResponse['value'],
+        }),
+      ).toBe(true)
+      const success = createSuccessResponse('req-jq', { lineId: 3, outputs: [] })
       expect(isSuccessResponse(success)).toBe(true)
+    })
+  })
+
+  describe('export snapshot & backpressure (TSK0034)', () => {
+    it('has typed codes for the export lock and the ack gate', () => {
+      expect(ErrorCode.EXPORT_IN_PROGRESS).toBe('EXPORT_IN_PROGRESS')
+      expect(ErrorCode.EXPORT_NOT_ACKED).toBe('EXPORT_NOT_ACKED')
+      expect(ErrorCode.EXPORT_FILTER_IN_FLIGHT).toBe('EXPORT_FILTER_IN_FLIGHT')
+      expect(ErrorCode.EXPORT_TOKEN_INVALID).toBe('EXPORT_TOKEN_INVALID')
+    })
+
+    it('validates an exportStart response carrying the snapshot generation', () => {
+      const value: ExportStartResponse['value'] = {
+        token: 'tok-1',
+        estimatedBytes: 1234,
+        totalRows: 10,
+        generation: 3,
+        partial: false,
+      }
+      expect(
+        validateWorkerResponse({
+          ns: 'jsonl-explorer',
+          v: 1,
+          type: 'exportStart',
+          requestId: 'req-exp',
+          ok: true,
+          value,
+        }),
+      ).toBe(true)
+      expect(value.generation).toBe(3)
+      expect(value.partial).toBe(false)
     })
   })
 

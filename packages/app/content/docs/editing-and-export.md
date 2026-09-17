@@ -124,6 +124,32 @@ file:
 - Edits are exported: the row's override replaces its source bytes
 - Exports use a captured generation for consistency
 
+### How an export stays consistent (worker snapshot + backpressure)
+
+- **Snapshot at start** — `exportStart` captures the view at ONE
+generation: the row membership (filtered view) is snapshotted, and a
+request carrying a stale generation is rejected with a typed error so an
+export never silently describes a view that has already moved. A filter
+scan still running is refused the same way (`EXPORT_FILTER_IN_FLIGHT`):
+a mid-scan membership is a view the user never saw.
+- **Edits are locked** — while any export is in flight, row edits are
+refused ("Edits are paused while an export is running"). This is what
+makes the content deterministic: the bytes streamed during the export are
+exactly the bytes the snapshot describes. Finishing or cancelling the
+export releases the lock.
+- **Bounded, acknowledged chunks** — output is pumped in chunks of at
+most 256 KiB of *complete* rows (a single row larger than the cap is
+emitted alone; a row is never split). The worker produces at most ONE
+chunk at a time and stops until the previous one is acknowledged, so a
+slow consumer can never make the worker's output queue grow unbounded.
+- **Progress** — every chunk reports how many complete rows have been
+exported, against the total from `exportStart`; the start response also
+carries a byte estimate (100-row sample) used for the fallback
+confirmation threshold.
+- **Failures are typed** — a source read failure cancels the export with
+an `EXPORT_FAILED` error; unknown or expired tokens are rejected with
+`EXPORT_TOKEN_INVALID`; cancel is idempotent.
+
 ## Right Panel Search
 
 Search within the selected document only:

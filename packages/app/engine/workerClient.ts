@@ -248,8 +248,14 @@ export class WorkerClient implements JsonlEngine {
     })
   }
 
-  async exportStart(options: { generation: number }): Promise<{ token: string; estimatedBytes: number; totalRows: number }> {
-    return await this.postRequest<{ token: string; estimatedBytes: number; totalRows: number }>({
+  async exportStart(options: { generation: number }): Promise<{
+    token: string
+    estimatedBytes: number
+    totalRows: number
+    generation: number
+    partial: boolean
+  }> {
+    return await this.postRequest({
       type: 'exportStart',
       generation: options.generation,
     })

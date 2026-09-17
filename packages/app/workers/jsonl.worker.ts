@@ -328,20 +328,59 @@ class Indexer {
 // Export Engine
 // ============================================================================
 
+/**
+ * One in-flight export (TSK0034). The SNAPSHOT is taken at start time:
+ * membership (matchedRows for a filtered view) AND content (row edits are
+ * locked while ANY export is active, so the bytes read during pumping are
+ * the bytes the snapshot describes). The ACK gate (pendingAck) keeps at
+ * most ONE chunk in the worker-to-main queue, so a slow consumer can never
+ * make the backlog grow past one bounded chunk.
+ */
 interface ExportState {
   token: string
   generation: number
   /** Filtered snapshot; empty when the view is unfiltered (identity). */
   matchedRows: Uint32Array
   hasFilter: boolean
-  matchedCount: number
+  /** Rows in this export: matchedCount when filtered, the committed row
+   *  count at start time when unfiltered. */
+  totalRows: number
   currentIndex: number
-  cancelled: boolean
+  /** True between a chunk response and its ack — the pump is stopped. */
+  pendingAck: boolean
 }
 
 /** Resolve an export's display index to a source row (identity-aware). */
 function exportRowAt(state: ExportState, displayIndex: number): number {
   return state.hasFilter ? (state.matchedRows[displayIndex] ?? 0) : displayIndex
+}
+
+/** Assemble the next bounded chunk: a run of complete rows (each with
+ *  exactly one trailing LF) up to the cap, or a single oversized row.
+ *  Advances `state.currentIndex`; returns `done` when no rows remain. */
+async function buildExportChunk(state: ExportState): Promise<{ data: Uint8Array; done: boolean }> {
+  if (state.currentIndex >= state.totalRows) {
+    return { data: new Uint8Array(0), done: true }
+  }
+  const parts: Uint8Array[] = []
+  let bytes = 0
+  const cap = ENGINE_DEFAULTS.exportChunkMaxBytes
+  while (state.currentIndex < state.totalRows) {
+    const row = exportRowAt(state, state.currentIndex)
+    const rowBytes = await exportLineText(row)
+    // A row alone over the cap still goes out (rows are never split).
+    if (bytes > 0 && bytes + rowBytes.byteLength > cap) break
+    parts.push(rowBytes)
+    bytes += rowBytes.byteLength
+    state.currentIndex++
+  }
+  const data = new Uint8Array(bytes)
+  let offset = 0
+  for (const part of parts) {
+    data.set(part, offset)
+    offset += part.byteLength
+  }
+  return { data, done: state.currentIndex >= state.totalRows }
 }
 
 /**
@@ -374,6 +413,14 @@ let filterEngine: FilterEngine | null = null
 let currentGeneration = 0
 /** True once the current source's indexComplete event has been emitted. */
 let indexComplete = false
+
+/** Count of filter scans currently running (the filter RPC and the
+ *  indexComplete rerun). A scan can overlap its own cancellation window
+ *  (a newer filter supersedes the in-flight one), so this is a COUNTER,
+ *  not a boolean — a boolean would let the old scan's `finally` clear the
+ *  flag the new scan just set. An export must never snapshot a mid-scan
+ *  membership — that is a view the user never saw (TSK0034). */
+let filterInFlightCount = 0
 /**
  * Edited-row overrides (1-based lineId -> edited text). Populated by
  * setEdit (TSK0030); the filter consults them so edited rows match their
@@ -417,6 +464,7 @@ async function maybeRerunFilter(): Promise<void> {
   rerunSeq++
   const operationId = `filter-rerun-${rerunSeq}`
   engine.setOperationId(operationId)
+  filterInFlightCount += 1
   try {
     const result = await engine.filter(active.kind, active.query)
     // The source was replaced mid-scan: the result is stale; drop it.
@@ -440,6 +488,8 @@ async function maybeRerunFilter(): Promise<void> {
     })
   } catch {
     // Cancelled (new filter/cancel RPC) or failed: keep the previous view.
+  } finally {
+    filterInFlightCount -= 1
   }
 }
 
@@ -777,6 +827,7 @@ async function handleFilter(request: FilterRequest): Promise<void> {
 
   filterEngine.setOperationId(request.operationId)
 
+  filterInFlightCount += 1
   try {
     const result = await filterEngine.filter(request.kind, request.query)
 
@@ -796,6 +847,8 @@ async function handleFilter(request: FilterRequest): Promise<void> {
     const code = error instanceof FilterCancelledError ? 'FILTER_CANCELLED' : 'FILTER_FAILED'
     const response = createErrorResponse(request.requestId, code, error instanceof Error ? error.message : String(error))
     self.postMessage(response)
+  } finally {
+    filterInFlightCount -= 1
   }
 }
 
@@ -1021,6 +1074,21 @@ async function handleSetEdit(request: SetEditRequest): Promise<void> {
     self.postMessage(response)
     return
   }
+
+  // Export determinism (TSK0034): an in-flight export snapshots content by
+  // reading rows while pumping. An edit landing mid-export would mix
+  // pre- and post-edit bytes in one file, so mutations are LOCKED until
+  // every export is done/acked or cancelled. Rejected typed — never queued
+  // (a queued edit would apply to a view the export no longer describes).
+  if (exportStates.size > 0) {
+    const response = createErrorResponse(
+      request.requestId,
+      'EXPORT_IN_PROGRESS',
+      'Edits are paused while an export is running. Finish or cancel the export first.',
+    )
+    self.postMessage(response)
+    return
+  }
   const engine = filterEngine
   const totalRows = indexer.getCommittedRows()
   const lineId = request.lineId
@@ -1086,8 +1154,34 @@ async function handleSetEdit(request: SetEditRequest): Promise<void> {
 }
 
 async function handleExportStart(request: ExportStartRequest): Promise<void> {
-  if (!filterEngine) {
+  if (!filterEngine || !indexer || !source) {
     const response = createErrorResponse(request.requestId, 'SOURCE_NOT_INITIALIZED', 'Source not initialized')
+    self.postMessage(response)
+    return
+  }
+
+  // The snapshot is only valid at ONE generation: the caller must pass the
+  // generation it is exporting. A stale value means the view moved under
+  // the click (a filter finished, an edit landed) and the export would
+  // silently describe a view the user never saw — reject, don't guess.
+  if (request.generation !== currentGeneration) {
+    const response = createErrorResponse(
+      request.requestId,
+      'STALE_GENERATION',
+      `The view changed since this export was prepared (expected generation ${currentGeneration}, got ${request.generation}). Retry with the current generation.`,
+    )
+    self.postMessage(response)
+    return
+  }
+
+  // A scan in flight means the membership below is mid-scan — a view the
+  // user never saw. Refuse typed; the caller retries once the scan settles.
+  if (filterInFlightCount > 0) {
+    const response = createErrorResponse(
+      request.requestId,
+      'EXPORT_FILTER_IN_FLIGHT',
+      'A filter is still running; the export would capture a mid-scan view. Try again once the filter finishes.',
+    )
     self.postMessage(response)
     return
   }
@@ -1101,19 +1195,22 @@ async function handleExportStart(request: ExportStartRequest): Promise<void> {
     ? filterEngine.getMatchedRows().slice(0, filterEngine.getMatchedCount())
     : new Uint32Array(0)
 
+  const totalRows = hasFilter ? matchedCount : indexer.getCommittedRows()
   exportStates.set(token, {
     token,
     generation: request.generation,
     matchedRows: snapshot,
     hasFilter,
-    matchedCount,
+    totalRows,
     currentIndex: 0,
-    cancelled: false,
+    pendingAck: false,
   })
 
+  // Estimate from a 100-row sample (overrides counted at their real
+  // length); scaled to the export size. An estimate only — the UI treats
+  // it as a threshold hint, not a promise.
   let estimatedBytes = 0
-  const indexerInstance = indexer!
-  const sampleCount = Math.min(matchedCount, 100)
+  const sampleCount = Math.min(totalRows, 100)
   for (let i = 0; i < sampleCount; i++) {
     const row = exportRowAt(exportStates.get(token)!, i)
     const override = editOverrides.get(row + 1)
@@ -1121,16 +1218,19 @@ async function handleExportStart(request: ExportStartRequest): Promise<void> {
       estimatedBytes += byteLengthOf(override) + 1
       continue
     }
-    const lineStart = indexerInstance.getLineStart(row)
-    const lineEnd = indexerInstance.getLineEnd(row)
-    estimatedBytes += ((lineEnd ?? 0) - (lineStart ?? 0) + 2)
+    const lineStart = indexer.getLineStart(row)
+    const lineEnd = indexer.getLineEnd(row)
+    // Display range is CR/LF-stripped; the export appends exactly one LF.
+    estimatedBytes += (lineEnd ?? 0) - (lineStart ?? 0) + 2
   }
-  estimatedBytes = sampleCount > 0 ? Math.round(estimatedBytes * (matchedCount / sampleCount)) : 0
+  estimatedBytes = sampleCount > 0 ? Math.round(estimatedBytes * (totalRows / sampleCount)) : 0
 
   const response = createSuccessResponse(request.requestId, {
     token,
     estimatedBytes,
-    totalRows: matchedCount,
+    totalRows,
+    generation: request.generation,
+    partial: !indexComplete,
   })
   self.postMessage(response)
 }
@@ -1143,45 +1243,57 @@ async function handleExportNext(request: ExportNextRequest): Promise<void> {
     return
   }
 
-  if (state.cancelled || state.currentIndex >= state.matchedCount) {
-    const response = createSuccessResponse(request.requestId, {
-      data: new Uint8Array(0),
-      done: true,
-      rowsExported: state.matchedCount,
-    })
+  // Backpressure: at most ONE unacknowledged chunk is in flight. A next
+  // before the ack is a protocol violation — reject it (the chunk stays
+  // queued on the main side, nothing is produced a second time).
+  if (state.pendingAck) {
+    const response = createErrorResponse(request.requestId, 'EXPORT_NOT_ACKED', 'Acknowledge the previous chunk before requesting the next one.')
     self.postMessage(response)
     return
   }
 
-  const matchedRowIndex = exportRowAt(state, state.currentIndex)
-  const exportBytes = await exportLineText(matchedRowIndex)
-
-  state.currentIndex++
-
-  const response = createSuccessResponse(request.requestId, {
-    data: exportBytes,
-    done: state.currentIndex >= state.matchedCount,
-    rowsExported: state.currentIndex,
-  })
-  self.postMessage(response)
+  state.pendingAck = true
+  try {
+    const { data, done } = await buildExportChunk(state)
+    const response = createSuccessResponse(request.requestId, {
+      data,
+      done,
+      rowsExported: state.currentIndex,
+    })
+    self.postMessage(response)
+  } catch (error) {
+    // A source read failed mid-export: the snapshot can no longer be
+    // served byte-exactly — fail typed and release the mutation lock.
+    exportStates.delete(state.token)
+    const response = createErrorResponse(
+      request.requestId,
+      'EXPORT_FAILED',
+      error instanceof Error ? `Export failed: ${error.message}` : 'Export failed while reading the source.',
+    )
+    self.postMessage(response)
+  }
 }
 
 async function handleExportAck(request: ExportAckRequest): Promise<void> {
   const state = exportStates.get(request.token)
-  if (state) {
-    state.cancelled = true
-    exportStates.delete(request.token)
+  if (!state) {
+    const response = createErrorResponse(request.requestId, 'EXPORT_TOKEN_INVALID', 'Invalid or expired export token')
+    self.postMessage(response)
+    return
   }
+  state.pendingAck = false
+  // The final chunk's ack completes the export: free the snapshot and
+  // release the edit lock. Non-final acks only re-arm the pump.
+  if (state.currentIndex >= state.totalRows) exportStates.delete(state.token)
   const response = createSuccessResponse(request.requestId, { acknowledged: true })
   self.postMessage(response)
 }
 
 async function handleExportCancel(request: ExportCancelRequest): Promise<void> {
-  const state = exportStates.get(request.token)
-  if (state) {
-    state.cancelled = true
-    exportStates.delete(request.token)
-  }
+  // Idempotent: cancelling an unknown/already-finished token is a no-op
+  // success (user action, not a protocol violation). Cancelling frees the
+  // snapshot and releases the edit lock.
+  exportStates.delete(request.token)
   const response = createSuccessResponse(request.requestId, { cancelled: true })
   self.postMessage(response)
 }

@@ -319,20 +319,24 @@ describe('edits: worker mirroring (TSK0030)', () => {
     expect(window.rows[1]!.isEdited).toBe(true)
   })
 
-  it('export streams override bytes instead of source bytes (TSK0030)', async () => {
+  it('export streams override bytes instead of source bytes (TSK0030, TSK0034 pump)', async () => {
     await initMemory('export.jsonl', '{"a":1}\n{"a":2}\n{"a":3}\n')
     await indexNow()
-    await setEdit(2, '{"a":2,"edited":true}')
+    const edit = await setEdit(2, '{"a":2,"edited":true}')
+    expect(edit.ok).toBe(true)
+    const generation = (edit.value as { newGeneration: number }).newGeneration
 
     const startId = requestId()
-    post({ requestId: startId, type: 'exportStart', generation: 1 })
+    post({ requestId: startId, type: 'exportStart', generation })
     const start = await waitForResponse(startId)
     expect(start.ok).toBe(true)
     const startValue = start.value as { token: string; totalRows: number }
     expect(startValue.totalRows).toBe(3)
     const token = startValue.token
 
-    const lines: string[] = []
+    // TSK0034 pump: next → ack, until the done chunk is acked.
+    const decoder = new TextDecoder()
+    let text = ''
     let done = false
     for (let guard = 0; !done && guard < 10; guard++) {
       const nextId = requestId()
@@ -340,19 +344,18 @@ describe('edits: worker mirroring (TSK0030)', () => {
       const res = await waitForResponse(nextId)
       expect(res.ok).toBe(true)
       const chunk = res.value as { data: Uint8Array; done: boolean; rowsExported: number }
-      lines.push(new TextDecoder().decode(chunk.data))
+      text += decoder.decode(chunk.data)
+      const ackId = requestId()
+      post({ requestId: ackId, type: 'exportAck', token })
+      expect((await waitForResponse(ackId)).ok).toBe(true)
       done = chunk.done
     }
     expect(done).toBe(true)
-    expect(lines.map((l) => l.replace(/\n$/, ''))).toEqual([
+    expect(text.split('\n').filter((l) => l !== '')).toEqual([
       '{"a":1}',
       '{"a":2,"edited":true}', // the override, not the source bytes
       '{"a":3}',
     ])
-
-    const ackId = requestId()
-    post({ requestId: ackId, type: 'exportAck', token })
-    expect((await waitForResponse(ackId)).ok).toBe(true)
   })
 
   it('replacing the source clears the edit map (line ids are per-source)', async () => {

@@ -70,6 +70,16 @@ export const ErrorCode = {
   EXPORT_CANCELLED: 'EXPORT_CANCELLED',
   EXPORT_TOKEN_INVALID: 'EXPORT_TOKEN_INVALID',
   EXPORT_BLOB_TOO_LARGE: 'EXPORT_BLOB_TOO_LARGE',
+  /** A row edit arrived while an export is in flight (mutations are
+   *  locked for export determinism; finish/cancel the export first). */
+  EXPORT_IN_PROGRESS: 'EXPORT_IN_PROGRESS',
+  /** exportNext arrived before the previous chunk was acknowledged
+   *  (backpressure: at most one unacknowledged chunk is in flight). */
+  EXPORT_NOT_ACKED: 'EXPORT_NOT_ACKED',
+  /** exportStart arrived while a filter scan is still running — the
+   *  membership being captured would be a mid-scan view the user never
+   *  saw, so the worker refuses instead of snapshotting it. */
+  EXPORT_FILTER_IN_FLIGHT: 'EXPORT_FILTER_IN_FLIGHT',
 
   // Handover errors
   HANDOVER_PAYLOAD_TOO_LARGE: 'HANDOVER_PAYLOAD_TOO_LARGE',
@@ -523,6 +533,12 @@ export interface ExportStartResponse extends BaseResponse {
     token: string // Opaque token for subsequent next/ack/cancel
     estimatedBytes: number
     totalRows: number
+    /** The generation the snapshot was taken at (the worker rejects a
+     *  stale `generation` in the request with STALE_GENERATION). */
+    generation: number
+    /** True when the source index was still incomplete at start time
+     *  (rows committed later are NOT part of this export). */
+    partial: boolean
   }
 }
 
@@ -531,6 +547,13 @@ export interface ExportNextRequest extends BaseRequest {
   token: string
 }
 
+/**
+ * One bounded chunk of export output (TSK0034): a run of COMPLETE rows
+ * (each terminated by exactly one LF) totalling at most
+ * ENGINE_DEFAULTS.exportChunkMaxBytes, or a single row that alone exceeds
+ * the cap (a row is never split across chunks). `rowsExported` counts
+ * complete rows so far (progress = rowsExported / totalRows).
+ */
 export interface ExportChunk {
   data: Uint8Array
   done: boolean
@@ -738,7 +761,7 @@ export interface JsonlEngine {
    */
   runJq(options: { lineId: number; program: string; text: string }): Promise<{ lineId: number; outputs: unknown[] }>
   setEdit(lineId: number, text?: string): Promise<{ lineId: number; isEdited: boolean; newGeneration: number; filteredIndex?: number }>
-  exportStart(options: { generation: number }): Promise<{ token: string; estimatedBytes: number; totalRows: number }>
+  exportStart(options: { generation: number }): Promise<{ token: string; estimatedBytes: number; totalRows: number; generation: number; partial: boolean }>
   exportNext(token: string): Promise<{ data: Uint8Array; done: boolean; rowsExported: number }>
   exportAck(token: string): Promise<void>
   exportCancel(token: string): Promise<void>
