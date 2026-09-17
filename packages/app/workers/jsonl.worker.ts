@@ -1165,10 +1165,14 @@ async function handleExportStart(request: ExportStartRequest): Promise<void> {
   // the click (a filter finished, an edit landed) and the export would
   // silently describe a view the user never saw — reject, don't guess.
   if (request.generation !== currentGeneration) {
+    // `details.currentGeneration` lets the caller retry ONCE with the
+    // authoritative value (the main thread's tracked generation may not
+    // have caught up to the bump that made this request stale).
     const response = createErrorResponse(
       request.requestId,
       'STALE_GENERATION',
-      `The view changed since this export was prepared (expected generation ${currentGeneration}, got ${request.generation}). Retry with the current generation.`,
+      `The view changed since this export was prepared (requested generation ${request.generation}, current generation ${currentGeneration}). Retry with the current generation.`,
+      { currentGeneration },
     )
     self.postMessage(response)
     return

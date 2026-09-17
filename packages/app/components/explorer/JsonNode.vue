@@ -22,6 +22,7 @@ import { isArray, childCount, isContainer, objectKeys } from '~/utils/jsonTree'
 import type { EditPath } from '~/utils/jsonEdit'
 import { pathKey as toPathKey } from '~/utils/detailSearch'
 import { useDetailStore } from '~/stores/detail'
+import { useExporterStore } from '~/stores/exporter'
 
 const props = withDefaults(
   defineProps<{
@@ -92,9 +93,18 @@ function focusEditInput(): void {
   })
 }
 
+/**
+ * Mutations are locked while an export is in flight (TSK0035): the
+ * worker rejects them typed anyway, but the UI disables the affordances
+ * so the lock is visible and consistent.
+ */
+const exporterStore = useExporterStore()
+const exportLocked = computed(() => exporterStore.isRunning)
+
 /** Click-to-edit: primitives on the token, containers on the bracket or
  *  the collapsed summary (the chevron is reserved for expand/collapse). */
 function beginEdit(): void {
+  if (exportLocked.value) return
   if (detailStore.isEditing) return // one editor at a time
   detailStore.startEdit(nodePath.value)
   if (isEditingHere.value) focusEditInput()
@@ -214,6 +224,7 @@ function primitiveToken(value: JsonValue): string {
           class="shrink-0 p-0 bg-transparent text-base-content/70 cursor-text hover:text-base-content"
           :data-testid="`json-edit-${keyName ?? 'root'}-${depth}`"
           title="Edit this value"
+          :disabled="exportLocked"
           @click="beginEdit()"
         >
           {{ isArr ? '[' : '{' }}
@@ -224,6 +235,7 @@ function primitiveToken(value: JsonValue): string {
           class="shrink-0 p-0 bg-transparent text-base-content/60 cursor-text hover:text-base-content"
           :data-testid="`json-count-${keyName ?? 'root'}-${depth}`"
           title="Edit this value"
+          :disabled="exportLocked"
           @click="beginEdit()"
         >
           {{ isArr ? '[' : '{' }} {{ count }} item{{ count === 1 ? '' : 's' }}
@@ -244,6 +256,7 @@ function primitiveToken(value: JsonValue): string {
         :data-token="typeof value === 'string' ? 'string' : value === null ? 'null' : String(typeof value)"
         :data-testid="`json-edit-${keyName ?? 'root'}-${depth}`"
         title="Edit this value"
+        :disabled="exportLocked"
         @click="beginEdit()"
       >
         {{ primitiveToken(value) }}

@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFileStore } from '~/stores/file'
+import { useExporterStore } from '~/stores/exporter'
 import { useToastStore } from '~/stores/toasts'
 import { useUrlRecovery } from '~/composables/useUrlRecovery'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
@@ -11,6 +12,8 @@ import RowList from '~/components/explorer/RowList.vue'
 import StatusBar from '~/components/explorer/StatusBar.vue'
 import DetailPanel from '~/components/explorer/DetailPanel.vue'
 import FilterBar from '~/components/explorer/FilterBar.vue'
+import ExportStatus from '~/components/explorer/ExportStatus.vue'
+import ExportConfirmModal from '~/components/explorer/ExportConfirmModal.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -18,12 +21,20 @@ const fileStore = useFileStore()
 const toastStore = useToastStore()
 const recovery = useUrlRecovery()
 const engineApi = useJsonlEngine()
+const exporterStore = useExporterStore()
 
 // Background indexing (TSK0019): file/handover sources are indexed after
 // init, so the explorer is entered while rows keep committing.
 const progress = computed(() => engineApi.progress.value)
 const indexState = computed(() => engineApi.indexState.value)
 const indexing = computed(() => indexState.value === 'running')
+
+// Export (TSK0035): FSA streams to a user-chosen file; the Blob fallback
+// (Firefox/Safari) buffers and may ask for confirmation above the threshold.
+function onExportClick() {
+  if (exporterStore.hasFsa) void exporterStore.runFsa()
+  else void exporterStore.prepareBlob()
+}
 
 async function cancelIndex() {
   await engineApi.cancelActive()
@@ -111,6 +122,18 @@ async function resetFile() {
       <div class="navbar-end gap-2">
         <nuxt-link to="/docs" class="btn btn-ghost btn-sm">Docs</nuxt-link>
         <!--
+          Export (TSK0035): worker snapshot + backpressure pump to the
+          browser's save destination. Disabled while nothing is loaded,
+          while an export runs, or while a filter scan is settling.
+        -->
+        <button
+          class="btn btn-ghost btn-sm"
+          data-testid="export-button"
+          :disabled="!exporterStore.canStart"
+          title="Export the current view (filtered or full) as .jsonl"
+          @click="onExportClick"
+        >Export</button>
+        <!--
           Upload another file (PLAN 4.3): back to landing; the engine is
           fully disposed (worker terminated, spool cleaned worker-side,
           caches gone with the worker) so nothing leaks across sources.
@@ -153,6 +176,9 @@ async function resetFile() {
       </div>
     </div>
 
+    <!-- Export progress (TSK0035): filename, row/byte progress, cancel. -->
+    <ExportStatus v-if="exporterStore.isRunning" />
+
     <!-- Main content -->
     <main class="flex-1 flex overflow-hidden">
       <!-- Left panel - Row list -->
@@ -185,5 +211,7 @@ async function resetFile() {
         </div>
       </div>
     </div>
+    <!-- Blob fallback: over-threshold estimate needs explicit consent. -->
+    <ExportConfirmModal />
   </div>
 </template>

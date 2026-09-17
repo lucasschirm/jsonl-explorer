@@ -15,6 +15,7 @@
 import { computed, ref } from 'vue'
 import { useDetailStore } from '~/stores/detail'
 import { useEditsStore } from '~/stores/edits'
+import { useExporterStore } from '~/stores/exporter'
 import { ENGINE_DEFAULTS } from '~/engine/config/adr'
 import { formatBytes, serializeFormatted, serializeCompact } from '~/utils/jsonTree'
 import JsonTree from '~/components/explorer/JsonTree.vue'
@@ -27,6 +28,12 @@ import { copyText } from '~/utils/clipboard'
 const detailStore = useDetailStore()
 const toastStore = useToastStore()
 const editsStore = useEditsStore()
+const exporterStore = useExporterStore()
+
+/** Mutations are disabled while an export is in flight (TSK0035): the
+ *  worker rejects them typed (EXPORT_IN_PROGRESS); the UI makes the lock
+ *  visible instead of failing the click. */
+const exportLocked = computed(() => exporterStore.isRunning)
 const searchStore = useDetailSearchStore()
 
 /** The active row carries a worker-accepted override (enables Reset). */
@@ -142,7 +149,7 @@ function confirmTree(): void {
       <button
         class="btn btn-sm btn-ghost"
         data-testid="detail-reset-btn"
-        :disabled="detailStore.status !== 'ready' || !isLineEdited"
+        :disabled="detailStore.status !== 'ready' || !isLineEdited || exportLocked"
         title="Reset this line to its original source text"
         @click="detailStore.resetLine()"
       >
@@ -225,6 +232,7 @@ function confirmTree(): void {
             <button
               class="btn btn-sm btn-ghost"
               data-testid="detail-raw-edit-btn"
+              :disabled="exportLocked"
               title="Edit this row as raw text (single line)"
               @click="detailStore.startRawEdit()"
             >
@@ -259,7 +267,7 @@ function confirmTree(): void {
             <button
               class="btn btn-primary btn-sm"
               data-testid="detail-raw-save-btn"
-              :disabled="rawExceedsBudget"
+              :disabled="rawExceedsBudget || exportLocked"
               @click="detailStore.commitRawEdit()"
             >
               Save

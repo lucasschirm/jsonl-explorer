@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { EngineRpcError } from '~/engine/workerClient'
 import type { FilterResult } from '@jsonl-explorer/shared'
@@ -40,6 +40,17 @@ export const useFilterStore = defineStore('filter', () => {
   const progress = ref<{ scannedRows: number; matchedRows: number; totalRows: number } | null>(null)
   let unsubscribeProgress: (() => void) | null = null
 
+  /**
+   * The generation of the view the main thread currently sees — identity
+   * OR filtered. The worker bumps its generation on index commits, filter
+   * completion, and edits; every one of those arrives here (indexComplete
+   * / filterComplete / editComplete events, or the RPC results), so this
+   * scalar is the best-known view generation for generation-gated RPCs
+   * (e.g. exportStart). A value that lags the worker's is safe: the
+   * worker rejects it typed and tells us the current one in the error.
+   */
+  const viewGeneration = ref(0)
+
   const matchedRows = computed(() => result.value?.matchedRows ?? 0)
   const totalRows = computed(() => result.value?.totalRows ?? 0)
   const generation = computed(() => result.value?.generation ?? 0)
@@ -59,23 +70,42 @@ export const useFilterStore = defineStore('filter', () => {
   // shape. Adopt only NEWER generations (generation is per-source;
   // resetFilterState clears result on source replacement, so there is no
   // cross-source comparison) and only while a filter view is active.
-  const unsubscribeComplete = engineApi.getEngine().onProgress((event) => {
-    if (event.type !== 'filterComplete' && event.type !== 'editComplete') return
-    if (event.type === 'editComplete' && result.value === null) return // identity view: nothing to update
-    const current = result.value?.generation ?? 0
-    if (event.generation <= current) return
-    result.value = {
-      matchedRows: event.matchedRows,
-      totalRows: event.totalRows,
-      generation: event.generation,
-      partial: event.partial,
-      errorCount: event.errorCount,
-      errorSummary: event.errorSummary,
-    }
-    if (status.value === 'running') {
-      status.value = 'idle'
-    }
-  })
+  // The subscription follows the engine instance: a recreated engine
+  // (dispose + reopen) re-binds it, and a dropped engine unbinds it.
+  let unsubscribeComplete: (() => void) | null = null
+  watch(
+    () => engineApi.engine.value,
+    (engine) => {
+      unsubscribeComplete?.()
+      unsubscribeComplete = null
+      if (!engine) return
+      unsubscribeComplete = engine.onProgress((event) => {
+        if (event.type === 'indexComplete') {
+          // Every index commit bumps the generation, even with no filter
+          // active: track it for generation-gated RPCs.
+          if (event.generation > viewGeneration.value) viewGeneration.value = event.generation
+          return
+        }
+        if (event.type !== 'filterComplete' && event.type !== 'editComplete') return
+        if (event.type === 'editComplete' && result.value === null) return // identity view: nothing to update
+        const current = result.value?.generation ?? 0
+        if (event.generation <= current) return
+        if (event.generation > viewGeneration.value) viewGeneration.value = event.generation
+        result.value = {
+          matchedRows: event.matchedRows,
+          totalRows: event.totalRows,
+          generation: event.generation,
+          partial: event.partial,
+          errorCount: event.errorCount,
+          errorSummary: event.errorSummary,
+        }
+        if (status.value === 'running') {
+          status.value = 'idle'
+        }
+      })
+    },
+    { immediate: true },
+  )
 
   function trackProgressFor(operationId: string): void {
     unsubscribeProgress?.()
@@ -111,6 +141,7 @@ export const useFilterStore = defineStore('filter', () => {
     try {
       const filterResult = await engineApi.getEngine().filter({ operationId, kind: newKind, query: newQuery })
       result.value = filterResult
+      if (filterResult.generation > viewGeneration.value) viewGeneration.value = filterResult.generation
       status.value = 'idle'
       return filterResult
     } catch (err) {
@@ -155,6 +186,7 @@ export const useFilterStore = defineStore('filter', () => {
     try {
       const cleared = await engineApi.getEngine().clearFilter({ operationId })
       result.value = cleared
+      if (cleared.generation > viewGeneration.value) viewGeneration.value = cleared.generation
       query.value = ''
       status.value = 'idle'
     } catch (err) {
@@ -171,6 +203,7 @@ export const useFilterStore = defineStore('filter', () => {
     status.value = 'idle'
     error.value = null
     result.value = null
+    viewGeneration.value = 0
     stopTracking()
   }
 
@@ -189,6 +222,7 @@ export const useFilterStore = defineStore('filter', () => {
     errorCount,
     errorSummary,
     hasActiveFilter,
+    viewGeneration,
     runFilter,
     cancelFilter,
     clearFilter,

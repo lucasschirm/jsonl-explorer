@@ -34,10 +34,13 @@ import { PROTOCOL_NAMESPACE, PROTOCOL_VERSION } from '@jsonl-explorer/shared'
 /** Typed error for worker-reported RPC failures (carries the code). */
 export class EngineRpcError extends Error {
   readonly code: ErrorCode
-  constructor(code: ErrorCode, message: string) {
+  /** Structured context from the worker (e.g. the current generation on a stale rejection). */
+  readonly details?: Record<string, unknown>
+  constructor(code: ErrorCode, message: string, details?: Record<string, unknown>) {
     super(message)
     this.name = 'EngineRpcError'
     this.code = code
+    this.details = details
   }
 }
 
@@ -384,8 +387,8 @@ export class WorkerClient implements JsonlEngine {
       if (msg.ok) {
         entry.resolve((msg as SuccessResponse<unknown>).value)
       } else {
-        const errorResponse = msg as { error: { code: ErrorCode; message: string } }
-        entry.reject(new EngineRpcError(errorResponse.error.code, errorResponse.error.message))
+        const errorResponse = msg as { error: { code: ErrorCode; message: string; details?: Record<string, unknown> } }
+        entry.reject(new EngineRpcError(errorResponse.error.code, errorResponse.error.message, errorResponse.error.details))
       }
       return
     }

@@ -444,6 +444,11 @@ export const ENGINE_DEFAULTS = {
   // is emitted alone). With the ack gate, the worker-to-main queue holds
   // at most one such chunk, keeping a slow consumer's backlog bounded.
   exportChunkMaxBytes: 256 * 1024,
+  // Blob fallback (TSK0035): a download keeps the WHOLE export in memory
+  // (Blob), so estimates above this threshold require explicit user
+  // confirmation before the pump starts. The File System Access path is
+  // streamed and never hits this gate.
+  exportBlobConfirmBytes: 512 * 1024 * 1024,
 } as const
 
 // ============================================================================

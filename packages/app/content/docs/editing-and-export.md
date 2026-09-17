@@ -115,14 +115,51 @@ These are view-only; they don't create edits.
 
 ## Export
 
-Click "Export" to download filtered rows (including edits) as a `.jsonl`
-file:
+Click **Export** (header) to download the current view — filtered rows,
+including edits — as a `.jsonl` file:
 
-- **File System Access API** — Native save dialog (preferred)
-- **Blob fallback** — Confirmation required for files > 512 MiB
 - Each row ends with exactly one `\n`
 - Edits are exported: the row's override replaces its source bytes
-- Exports use a captured generation for consistency
+- Exports use a captured generation for consistency (below)
+- The Export button is disabled until a file is loaded and idle (no export
+  running, no filter scan settling)
+
+### Destinations
+
+- **File System Access** (Chrome/Edge — the TSK0001 support policy's
+  preferred path): the native save dialog picks the file, and chunks are
+  **streamed straight into it** via the writable stream. The whole output
+  never sits in memory. On success the writable is `close()`d (commit); on
+  cancel or failure it is `abort()`ed, which **discards the partial file**
+  — a cancelled export never leaves a truncated file behind. Closing the
+  save dialog is a plain cancel (info toast), not an error.
+- **Blob fallback** (Firefox/Safari): chunks accumulate into a Blob
+  (`application/x-ndjson`), a hidden anchor triggers the download, and the
+  object URL is revoked ~1 s after the click (long enough that the download
+  cannot race the revocation). The whole output sits in memory, so an
+  estimate **above 512 MiB** (`ENGINE_DEFAULTS.exportBlobConfirmBytes`) is
+  refused until you explicitly confirm in a dialog — and while you decide,
+  the export is released (its worker state and the edit lock freed), so a
+  dismissed confirmation costs nothing. Confirming starts a fresh export.
+
+### While an export runs
+
+- A progress strip shows the file name, rows exported / total, bytes, and a
+  **Cancel** button. Cancel stops the pump and releases the worker's export
+  state immediately (the in-flight chunk then fails with a typed
+  `EXPORT_TOKEN_INVALID`, unwinding the run).
+- **Mutations are gated in the UI**: the tree's edit affordances and the
+  detail panel's reset/raw-edit controls are disabled while the run is
+  active — and the worker still hard-refuses with `EXPORT_IN_PROGRESS` as a
+  backstop (see the edit-lock note below).
+- Every exit path toasts exactly once with a typed, actionable message
+  (success: rows + bytes + file name; cancel: info; failure: the worker's
+  reason).
+- If the view generation moved between your click and the `exportStart`
+  RPC (e.g. an edit or index commit landed in between), the worker rejects
+  with `STALE_GENERATION` and the **current** generation in the error;
+  the UI retries ONCE with that value. A filter scan in flight is NOT
+  retried — a warning toast asks you to retry once the filter settles.
 
 ### How an export stays consistent (worker snapshot + backpressure)
 
