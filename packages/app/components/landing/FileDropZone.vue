@@ -3,6 +3,7 @@ import { ref, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToastStore } from '~/stores/toasts'
 import { useFileStore } from '~/stores/file'
+import { decideDrop, decideFilePick, type FileIntake } from '~/utils/fileIntake'
 
 const router = useRouter()
 const toastStore = useToastStore()
@@ -11,35 +12,27 @@ const fileStore = useFileStore()
 const dropZoneRef = useTemplateRef<HTMLDivElement>('dropZone')
 const fileInputRef = useTemplateRef<HTMLInputElement>('fileInput')
 const isDragging = ref(false)
+
 const isLoading = ref(false)
 
-const allowedExtensions = ['.jsonl', '.json', '.ndjson', '.txt']
+/** Surfaces intake notices, then loads + navigates on success only. */
+async function handleIntake(intake: FileIntake): Promise<void> {
+  if (intake.kind === 'none') return
 
-function isUnusualExtension(name: string): boolean {
-  const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
-  return !allowedExtensions.includes(ext)
-}
-
-async function handleFile(file: File) {
-  if (!file) return
-
-  // Check for zero-byte file
-  if (file.size === 0) {
-    toastStore.warning('File is empty', 'Zero-byte file')
+  if (intake.kind === 'reject-empty') {
+    toastStore.warning(intake.notice.message, 'Zero-byte file')
     return
   }
 
-  // Warn about unusual extension
-  if (isUnusualExtension(file.name)) {
-    toastStore.warning(
-      `File extension "${file.name.slice(file.name.lastIndexOf('.'))}" is unusual for JSONL. Proceeding anyway.`,
-      'Unusual file type'
-    )
+  for (const notice of intake.notices) {
+    toastStore.warning(notice.message, 'File note')
   }
 
   isLoading.value = true
   try {
-    await fileStore.loadFile(file)
+    // Navigate only after the worker has the source set up (initFile
+    // resolves with the worker's success response).
+    await fileStore.loadFile(intake.file)
     await router.push('/explorer')
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load file'
@@ -52,12 +45,9 @@ async function handleFile(file: File) {
 function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
   if (input.files && input.files.length > 0) {
-    if (input.files.length > 1) {
-      toastStore.info('Multiple files selected. Using the first file.', 'Multiple files')
-    }
-    handleFile(input.files[0])
-    input.value = '' // Reset for same file re-selection
+    void handleIntake(decideFilePick(input.files))
   }
+  input.value = '' // Reset for same file re-selection
 }
 
 function onDragOver(event: DragEvent) {
@@ -80,28 +70,16 @@ function onDrop(event: DragEvent) {
   event.stopPropagation()
   isDragging.value = false
 
-  const items = event.dataTransfer?.items
-  if (!items || items.length === 0) return
-
-  // Check for directory drops
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]
-    if (item.kind === 'file') {
-      const entry = item.webkitGetAsEntry?.()
-      if (entry && entry.isDirectory) {
-        toastStore.warning('Directories cannot be dropped. Please select a file.', 'Directory dropped')
-        return
-      }
-    }
+  const drop = decideDrop(event.dataTransfer?.items ?? null, event.dataTransfer?.files ?? null)
+  if (drop.kind === 'directory') {
+    toastStore.warning('Directories cannot be dropped — please pick a single file.', 'Directory dropped')
+    return
   }
-
-  const files = event.dataTransfer?.files
-  if (files && files.length > 0) {
-    if (files.length > 1) {
-      toastStore.info('Multiple files dropped. Using the first file.', 'Multiple files')
-    }
-    handleFile(files[0])
+  if (drop.kind === 'non-file') {
+    toastStore.warning('Only file drops are supported — plain text and links are ignored.', 'Non-file drop')
+    return
   }
+  void handleIntake(decideFilePick(drop.files))
 }
 
 function triggerFileInput() {
@@ -111,7 +89,7 @@ function triggerFileInput() {
 
 <template>
   <div
-    ref="dropZoneRef"
+    ref="dropZone"
     class="relative border-2 border-dashed rounded-lg p-8 text-center transition-colors
            hover:border-primary/50 hover:bg-primary/5
            cursor-pointer"
@@ -130,7 +108,7 @@ function triggerFileInput() {
     aria-label="File drop zone. Click or drag and drop a JSONL file."
   >
     <input
-      ref="fileInputRef"
+      ref="fileInput"
       type="file"
       id="file-input"
       class="absolute inset-0 opacity-0 cursor-pointer"

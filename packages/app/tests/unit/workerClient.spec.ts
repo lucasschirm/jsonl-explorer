@@ -8,52 +8,7 @@ import {
   SourceReplacedError,
 } from '~/engine/workerClient'
 import { PROTOCOL_NAMESPACE, PROTOCOL_VERSION } from '@jsonl-explorer/shared'
-
-/**
- * Minimal Worker stand-in: captures posted messages, lets tests deliver
- * `message`/`error` events, and counts terminates.
- */
-class FakeWorker {
-  readonly posted: unknown[] = []
-  /** Buffers the client asked to transfer (real postMessage detaches them). */
-  readonly transferred: Transferable[] = []
-  terminated = 0
-  onmessage: ((event: { data: unknown }) => void) | null = null
-  onerror: ((event: unknown) => void) | null = null
-  onmessageerror: ((event: unknown) => void) | null = null
-  private listeners = new Map<string, Set<(event: { data: unknown }) => void>>()
-
-  postMessage(message: unknown, transfer?: Transferable[]): void {
-    this.posted.push(message)
-    this.transferred.push(...(transfer ?? []))
-  }
-
-  addEventListener(type: string, handler: (event: { data: unknown }) => void): void {
-    if (!this.listeners.has(type)) this.listeners.set(type, new Set())
-    this.listeners.get(type)!.add(handler)
-  }
-
-  removeEventListener(type: string, handler: (event: { data: unknown }) => void): void {
-    this.listeners.get(type)?.delete(handler)
-  }
-
-  emit(data: unknown): void {
-    this.onmessage?.({ data })
-    this.listeners.get('message')?.forEach((handler) => handler({ data }))
-  }
-
-  fail(): void {
-    this.onerror?.({})
-  }
-
-  terminate(): void {
-    this.terminated += 1
-  }
-
-  get last(): { type?: string; requestId?: string } {
-    return this.posted[this.posted.length - 1] as { type?: string; requestId?: string }
-  }
-}
+import { FakeWorker, success, failure } from '../helpers/fakeWorker'
 
 function makeClient(workers: FakeWorker[]): WorkerClient {
   return new WorkerClient({
@@ -63,14 +18,6 @@ function makeClient(workers: FakeWorker[]): WorkerClient {
       return worker as unknown as Worker
     },
   })
-}
-
-function success(requestId: string, value: unknown) {
-  return { ns: PROTOCOL_NAMESPACE, v: PROTOCOL_VERSION, requestId, ok: true, value }
-}
-
-function failure(requestId: string, code: string, message: string) {
-  return { ns: PROTOCOL_NAMESPACE, v: PROTOCOL_VERSION, requestId, ok: false, error: { code, message } }
 }
 
 describe('WorkerClient RPC correlation', () => {
@@ -105,6 +52,7 @@ describe('WorkerClient RPC correlation', () => {
     await expect(promise).rejects.toBeInstanceOf(EngineRpcError)
     await expect(promise).rejects.toMatchObject({ code: 'SOURCE_NOT_INITIALIZED' })
   })
+
 
   it('transfers handover ArrayBuffers instead of cloning them', async () => {
     const workers: FakeWorker[] = []
