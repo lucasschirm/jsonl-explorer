@@ -321,6 +321,12 @@ export const CLI_CONFIG = {
  *   concatenating the response; large (> maxHandoverPayloadBytes) or
  *   unknown-size responses require explicit user confirmation (the fallback
  *   is never silent). A mid-stream OPFS quota failure re-fetches into RAM.
+ *   URL bytes are indexed incrementally as they spool (scanner `feed()`):
+ *   committed rows are queryable (filter/getRows/getLine) before the
+ *   download completes; `indexComplete` fires when it does. URLs must be
+ *   http(s), custom headers are validated/sanitized before fetch, and
+ *   credentials (URL userinfo, secret header values) never appear in
+ *   error messages or protocol events.
  * - MemorySource: UTF-8 encode string or transfer ArrayBuffer
  *
  * References: PLAN.md 4.2

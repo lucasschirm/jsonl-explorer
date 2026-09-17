@@ -77,6 +77,7 @@ export const ErrorCode = {
   HANDOVER_TIMEOUT: 'HANDOVER_TIMEOUT',
 
   // URL loading errors
+  URL_INVALID: 'URL_INVALID',
   URL_FETCH_FAILED: 'URL_FETCH_FAILED',
   URL_CORS_DENIED: 'URL_CORS_DENIED',
   URL_INVALID_HEADERS: 'URL_INVALID_HEADERS',
@@ -165,6 +166,11 @@ export interface InitUrlRequest extends OperationRequest {
   type: 'initUrl'
   url: string
   headers?: Record<string, string>
+  /**
+   * Origin of the requesting page. Dedicated workers cannot read
+   * `location`, so the page passes its origin for CORS heuristics.
+   */
+  pageOrigin?: string
 }
 
 /**

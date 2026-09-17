@@ -40,4 +40,16 @@ export type {
   UrlDownloadResult,
   UrlFallbackInfo,
   UrlProgressInfo,
+  UrlSpoolCreatedInfo,
 } from './urlDownloader.js'
+
+export {
+  UrlCorsDeniedError,
+  UrlInvalidHeadersError,
+  UrlRedirectDeniedError,
+  UrlValidationError,
+  isCrossOrigin,
+  redactUrl,
+  sanitizeHeaders,
+  validateHttpUrl,
+} from '../url.js'

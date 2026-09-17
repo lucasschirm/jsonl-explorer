@@ -35,225 +35,19 @@ import {
   SPOOL_ARTIFACT_PREFIX,
 } from '../../engine/spool/index.js'
 import type {
-  OpfsStorageLike,
   StorageEstimateProvider,
   UrlFallbackInfo,
 } from '../../engine/spool/index.js'
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-const encoder = new TextEncoder()
-
-function encode(text: string): Uint8Array {
-  return encoder.encode(text)
-}
-
-function patternBytes(total: number): Uint8Array {
-  const out = new Uint8Array(total)
-  for (let i = 0; i < total; i++) out[i] = (i * 7 + 3) % 256
-  return out
-}
-
-function splitBytes(bytes: Uint8Array, chunkSizes: number[]): Uint8Array[] {
-  const out: Uint8Array[] = []
-  let pos = 0
-  for (const size of chunkSizes) {
-    if (pos >= bytes.length) break
-    out.push(bytes.slice(pos, pos + size))
-    pos += size
-  }
-  return out
-}
-
-// --- Fake OPFS -------------------------------------------------------------
-
-class FakeFileHandle {
-  readonly kind = 'file' as const
-  name: string
-  data: Uint8Array = new Uint8Array(0)
-  closedWritables = 0
-  quotaLimit: number | null = null
-
-  constructor(name: string, quotaLimit: number | null = null) {
-    this.name = name
-    this.quotaLimit = quotaLimit
-  }
-
-  async createWritable() {
-    let closed = false
-    const self = this
-    return {
-      getWriter() {
-        return {
-          async write(chunk: Uint8Array): Promise<void> {
-            if (closed) throw new Error('Writer is closed')
-            if (
-              self.quotaLimit !== null &&
-              self.data.length + chunk.length > self.quotaLimit
-            ) {
-              throw new DOMException('Exceeded quota', 'QuotaExceededError')
-            }
-            const next = new Uint8Array(self.data.length + chunk.length)
-            next.set(self.data, 0)
-            next.set(chunk, self.data.length)
-            self.data = next
-          },
-          async close(): Promise<void> {
-            closed = true
-            self.closedWritables++
-          },
-        }
-      },
-    }
-  }
-
-  async getFile(): Promise<File> {
-    const self = this
-    return {
-      name: this.name,
-      slice(start: number, end?: number): Blob {
-        const data = self.data
-        const s = Math.max(0, Math.floor(start))
-        const e = end === undefined ? data.length : Math.min(Math.floor(end), data.length)
-        const out = new Uint8Array(Math.max(0, e - s))
-        out.set(data.subarray(s, e), 0)
-        return new Blob([out])
-      },
-    } as unknown as File
-  }
-}
-
-class FakeDirHandle {
-  entries = new Map<string, FakeFileHandle>()
-  quotaLimit: number | null = null
-
-  async getDirectoryHandle(name: string, options?: { create?: boolean }) {
-    if (this.entries.has(name)) throw new DOMException('exists', 'TypeMismatchError')
-    if (!options?.create) throw new DOMException('not found', 'NotFoundError')
-    // Nested directories are not needed by the spool; return self-shaped fake.
-    const dir = new FakeDirHandle()
-    this.entries.set(name, dir as unknown as FakeFileHandle)
-    return dir as unknown as FileSystemDirectoryHandle
-  }
-
-  async getFileHandle(name: string, options?: { create?: boolean }) {
-    const existing = this.entries.get(name)
-    if (existing) return existing as unknown as FileSystemFileHandle
-    if (!options?.create) throw new DOMException('not found', 'NotFoundError')
-    const file = new FakeFileHandle(name, this.quotaLimit)
-    this.entries.set(name, file)
-    return file as unknown as FileSystemFileHandle
-  }
-
-  async removeEntry(name: string, _options?: { recursive?: boolean }): Promise<void> {
-    if (!this.entries.has(name)) throw new DOMException('not found', 'NotFoundError')
-    this.entries.delete(name)
-  }
-
-  values(): AsyncIterableIterator<FileSystemHandle> {
-    const values = [...this.entries.values()]
-    let i = 0
-    const iter = {
-      [Symbol.asyncIterator]: () => iter,
-      next: async (): Promise<IteratorResult<FileSystemHandle>> =>
-        i < values.length
-          ? { done: false, value: values[i++] as unknown as FileSystemHandle }
-          : { done: true, value: undefined },
-    }
-    return iter as unknown as AsyncIterableIterator<FileSystemHandle>
-  }
-}
-
-interface FakeStorageOpts {
-  quota?: number
-  usage?: number
-  /** Makes getDirectory() throw (OPFS unusable). */
-  failGetDirectory?: boolean
-}
-
-function makeFakeStorage(opts: FakeStorageOpts = {}) {
-  const root = new FakeDirHandle()
-  const storage: OpfsStorageLike = {
-    getDirectory: async () => {
-      if (opts.failGetDirectory) throw new DOMException('denied', 'SecurityError')
-      return root as unknown as FileSystemDirectoryHandle
-    },
-    estimate: async () => ({ usage: opts.usage ?? 0, quota: opts.quota ?? 10 * 1024 * 1024 }),
-  }
-  return { root, storage }
-}
-
-// --- Fake fetch ------------------------------------------------------------
-
-interface FakeFetchOpts {
-  /** Chunk sizes for the body stream; must cover the full payload. */
-  chunks?: number[]
-  headers?: Record<string, string>
-  status?: number
-  /** Reject the fetch call with a network error. */
-  networkError?: boolean
-  /** Extra delay hook before each read resolves (tests gating aborts). */
-  onRead?: (readIndex: number) => Promise<void> | void
-  /** Omit the automatic Content-Length header (indeterminate size). */
-  noContentLength?: boolean
-}
-
-function makeFetch(bytes: Uint8Array, opts: FakeFetchOpts = {}) {
-  const calls: { url: string; headers?: Record<string, string>; signal?: AbortSignal }[] = []
-  const headerMap = new Map<string, string>(Object.entries(opts.headers ?? {}))
-  if (!opts.noContentLength && !headerMap.has('content-length') && !headerMap.has('content-encoding')) {
-    headerMap.set('content-length', String(bytes.length))
-  }
-  const headers: Headers = {
-    get: (name: string) => headerMap.get(name.toLowerCase()) ?? null,
-  } as unknown as Headers
-  const chunks = splitBytes(bytes, opts.chunks ?? [Math.max(1, bytes.length)])
-
-  const impl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    calls.push({
-      url: String(input),
-      headers: init?.headers as Record<string, string> | undefined,
-      signal: init?.signal ?? undefined,
-    })
-    if (opts.networkError) throw new TypeError('Failed to fetch')
-    const status = opts.status ?? 200
-    if (status >= 400) {
-      return { ok: false, status, statusText: 'Not Found', headers, body: null } as unknown as Response
-    }
-    const signal = init?.signal
-    let readIndex = 0
-    return {
-      ok: true,
-      status,
-      statusText: 'OK',
-      headers,
-      body: {
-        getReader() {
-          return {
-            async read(): Promise<{ done: boolean; value?: Uint8Array }> {
-              if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-              if (readIndex >= chunks.length) return { done: true }
-              const index = readIndex++
-              await opts.onRead?.(index)
-              if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-              const value = chunks[index]!
-              return { done: false, value }
-            },
-          }
-        },
-      },
-    } as unknown as Response
-  }
-  return { impl, calls }
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
-  return true
-}
+import {
+  FakeDirHandle,
+  bytesEqual,
+  encode,
+  makeFakeStorage,
+  makeFetch,
+  patternBytes,
+  splitBytes,
+} from '../helpers/spoolFakes.js'
 
 // ============================================================================
 // PagedMemoryStore
@@ -551,7 +345,9 @@ describe('UrlDownloader', () => {
     const downloader = new UrlDownloader({
       fetchImpl: impl,
       storage,
-      onProgress: (p) => progress.push(p),
+      onProgress: (p) => {
+        progress.push(p)
+      },
     })
     const result = await downloader.download('https://example.com/a/b/data.jsonl')
     expect(calls.length).toBe(1)
@@ -661,7 +457,9 @@ describe('UrlDownloader', () => {
       fetchImpl: impl,
       storage: null,
       onFallbackRequest,
-      onProgress: (p) => progress.push(p),
+      onProgress: (p) => {
+        progress.push(p)
+      },
     })
     const result = await downloader.download('https://example.com/x.jsonl')
     expect(result.declaredBytes).toBeUndefined()
@@ -969,5 +767,115 @@ describe('jsonl.worker URL integration', () => {
       size: p2.length,
       type: 'url',
     })
+  })
+
+  it('makes rows queryable while the download is still streaming', async () => {
+    // Three 10-byte rows; the first streams immediately, the rest wait on a
+    // single gate promise so the download can be paused after chunk 1.
+    const payload = encode('[{"n":1}]\n[{"n":2}]\n[{"n":3}]\n')
+    expect(payload.length).toBe(30)
+    let releaseGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const { impl } = makeFetch(payload, {
+      chunks: [10, 10, 10],
+      onRead: (index) => (index === 0 ? undefined : gate),
+    })
+    vi.stubGlobal('fetch', impl)
+    await import('../../workers/jsonl.worker.js')
+
+    const initPromise = post({
+      requestId: 'r-stream',
+      operationId: 'op-stream',
+      type: 'initUrl',
+      url: 'https://example.com/rows.jsonl',
+      headers: {},
+    })
+
+    // Determinate size (Content-Length): no consent needed; first chunk in.
+    await vi.waitFor(() => expect(posted('urlProgress')).toHaveLength(1))
+    const progress1 = posted('urlProgress')[0] as {
+      receivedBytes: number
+      totalBytes?: number
+    }
+    expect(progress1).toMatchObject({ receivedBytes: 10, totalBytes: 30 })
+
+    // The first indexed chunk produced a determinate indexProgress.
+    const idxProgress = posted('indexProgress') as { committedRows: number; totalBytes?: number }[]
+    expect(idxProgress.length).toBeGreaterThanOrEqual(1)
+    expect(idxProgress.at(-1)).toMatchObject({ committedRows: 1, totalBytes: 30 })
+
+    // Rows are queryable while the download is still in flight: an
+    // empty text query matches every committed row.
+    post({ requestId: 'r-f', operationId: 'op-stream', type: 'filter', kind: 'text', query: '' })
+    await vi.waitFor(() => {
+      expect(
+        postSpy.mock.calls.map((c) => c[0]).some((m: { requestId?: string }) => m.requestId === 'r-f'),
+      ).toBe(true)
+    })
+    const filterResp = postSpy.mock.calls
+      .map((c) => c[0] as { requestId?: string; ok?: boolean; value?: { totalRows: number } })
+      .find((m) => m.requestId === 'r-f')
+    expect(filterResp?.ok).toBe(true)
+    expect(filterResp?.value?.totalRows).toBe(1)
+
+    post({ requestId: 'r-rows', operationId: 'op-stream', type: 'getRows', start: 0, count: 10 })
+    await vi.waitFor(() => {
+      expect(
+        postSpy.mock.calls.map((c) => c[0]).some((m: { requestId?: string }) => m.requestId === 'r-rows'),
+      ).toBe(true)
+    })
+    const rowsResp = postSpy.mock.calls
+      .map((c) => c[0] as {
+        requestId?: string
+        ok?: boolean
+        value?: {
+          rows: { lineId: number; displayIndex: number; text: string; isEdited: boolean; byteLength: number }[]
+          totalFiltered: number
+        }
+      })
+      .find((m) => m.requestId === 'r-rows')
+    expect(rowsResp?.ok).toBe(true)
+    expect(rowsResp?.value?.totalFiltered).toBe(1)
+    expect(rowsResp?.value?.rows).toEqual([
+      { lineId: 1, displayIndex: 0, text: '[{"n":1}]', isEdited: false, byteLength: 9 },
+    ])
+
+    // Release the gate; the remaining chunks stream and the init completes
+    // with the full index plus a single indexComplete.
+    releaseGate()
+    await initPromise
+    const complete = posted('indexComplete') as { operationId: string; totalRows: number; totalBytes: number }[]
+    expect(complete).toHaveLength(1)
+    expect(complete[0]).toMatchObject({ operationId: 'op-stream', totalRows: 3, totalBytes: 30 })
+    const initResp = postSpy.mock.calls
+      .map((c) => c[0] as { requestId?: string; ok?: boolean; value?: { name: string; size: number; type: string } })
+      .find((m) => m.requestId === 'r-stream')
+    expect(initResp?.ok).toBe(true)
+    expect(initResp?.value).toEqual({ name: 'rows.jsonl', size: 30, type: 'url' })
+  })
+
+  it('emits indeterminate indexProgress when Content-Length is absent', async () => {
+    const payload = encode('[{"n":1}]\n[{"n":2}]\n')
+    const { impl } = makeFetch(payload, { noContentLength: true, chunks: [10, 10] })
+    vi.stubGlobal('fetch', impl)
+    await import('../../workers/jsonl.worker.js')
+
+    const initPromise = post({
+      requestId: 'r-indet',
+      operationId: 'op-indet',
+      type: 'initUrl',
+      url: 'https://example.com/indet.jsonl',
+      headers: {},
+    })
+    await vi.waitFor(() => expect(posted('urlFallbackConfirm').length).toBe(1))
+    post({ requestId: 'r-indet-c', type: 'urlFallbackConfirm', operationId: 'op-indet', accept: true })
+    await vi.waitFor(() => expect(posted('urlProgress').length).toBeGreaterThanOrEqual(1))
+    const first = posted('indexProgress')[0] as { progress: number; totalBytes?: number; committedRows: number }
+    expect(first.totalBytes).toBeUndefined()
+    expect(first.progress).toBe(0)
+    expect(first.committedRows).toBe(1)
+    await initPromise
   })
 })

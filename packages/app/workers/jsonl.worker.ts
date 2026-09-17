@@ -52,12 +52,18 @@ import {
   FallbackDeclinedError,
   SpoolQuotaExceededError,
   SpoolSource,
+  UrlCorsDeniedError,
   UrlDownloader,
   UrlFetchError,
+  UrlInvalidHeadersError,
+  UrlRedirectDeniedError,
+  UrlValidationError,
   cleanupStaleSpools,
+  redactUrl,
+  urlFileName,
 } from '../engine/spool/index.js'
 import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
-import type { ScanProgress } from '../engine/scanner.js'
+import type { ScanProgress, ScanResult } from '../engine/scanner.js'
 import { offsetToNumber } from '../engine/indexer.js'
 
 // Re-export shared types
@@ -92,6 +98,9 @@ const PROGRESS_INTERVAL_ROWS = 1000
  */
 let activeInit: { operationId: string; controller: AbortController } | null = null
 let pendingFallbackConfirm: { operationId: string; resolve: (accept: boolean) => void } | null = null
+/** Indexer/declared-size of the in-flight URL download (set on spool creation). */
+let activeIndexer: Indexer | null = null
+let activeDeclaredBytes: bigint | undefined
 
 /** Resets worker-owned state before (re)initializing a source. */
 async function resetSourceState(): Promise<void> {
@@ -101,6 +110,8 @@ async function resetSourceState(): Promise<void> {
   }
   indexer = null
   filterEngine = null
+  activeIndexer = null
+  activeDeclaredBytes = undefined
   exportStates.clear()
   currentGeneration = 0
 }
@@ -140,6 +151,9 @@ class Indexer {
   private scanAborted = false
   private lastProgressTime = 0
 
+  /** Absolute offset of the next byte to feed (incremental mode). */
+  private fedOffset = 0n
+
   constructor(source: JsonlSource) {
     this.source = source
     this.scanner = new JsonlScanner(source)
@@ -155,10 +169,13 @@ class Indexer {
 
   async index(): Promise<{ totalRows: number; totalBytes: number; invalidUtf8Rows: number }> {
     // A scanner is single-use: after completion or abort, start a fresh one
-    // so index requests can be retried (e.g. after a user cancel).
-    if (this.scanner.isComplete() || this.scanAborted) {
+    // so index requests can be retried (e.g. after a user cancel). A
+    // feed-driven scanner (URL download) must also be replaced: `scan()`
+    // and `feed()` cannot mix on one scanner.
+    if (this.scanner.isComplete() || this.scanAborted || this.scanner.isStarted()) {
       this.scanner = new JsonlScanner(this.source)
       this.scanAborted = false
+      this.fedOffset = 0n
     }
     this.abortController = new AbortController()
     const startedAt = performance.now()
@@ -216,6 +233,56 @@ class Indexer {
 
   getInvalidUtf8Rows(): number {
     return this.scanner.getInvalidUtf8Rows()
+  }
+
+  /**
+   * Incrementally indexes the bytes newly available in the source (from
+   * the last fed offset to the current size). Rows committed by feeds are
+   * immediately queryable — this is what makes rows visible while a URL
+   * download streams. Emits throttled `indexProgress` events; `totalBytes`
+   * is only included for determinate (unencoded Content-Length) sources.
+   * @throws {IndexAbortedError} when `signal` is aborted between steps.
+   */
+  async indexDelta(options: {
+    operationId?: string
+    totalBytes?: bigint
+    signal?: AbortSignal
+  }): Promise<void> {
+    const size = await this.source.getSize()
+    while (this.fedOffset < size) {
+      if (options.signal?.aborted) throw new IndexAbortedError()
+      const remaining = size - this.fedOffset
+      const want = remaining < BigInt(this.scanner.chunkSize) ? Number(remaining) : this.scanner.chunkSize
+      const chunk = await this.source.readRange(this.fedOffset, want)
+      this.scanner.feed(chunk, this.fedOffset)
+      this.fedOffset += BigInt(chunk.length)
+      this.emitDeltaProgress(options)
+    }
+  }
+
+  /** Completes an incremental feed at the source's final size. */
+  async finishDelta(): Promise<ScanResult> {
+    return this.scanner.finish(await this.source.getSize())
+  }
+
+  private emitDeltaProgress(options: { operationId?: string; totalBytes?: bigint }): void {
+    if (!options.operationId) return
+    const now = performance.now()
+    if (now - this.lastProgressTime < 50) return
+    this.lastProgressTime = now
+    const total = options.totalBytes
+    const event: IndexProgressEvent = {
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'indexProgress',
+      operationId: options.operationId,
+      progress: total !== undefined && total > 0n ? Number((this.fedOffset * 100n) / total) : 0,
+      committedRows: this.scanner.getRowCount(),
+      committedBytes: Number(this.fedOffset),
+      rowsProcessed: this.scanner.getRowCount(),
+      totalBytes: total !== undefined ? Number(total) : undefined,
+    }
+    self.postMessage(event)
   }
 
   private emitIndexProgress(p: ScanProgress): void {
@@ -538,6 +605,10 @@ function errorToErrorCode(error: unknown): ErrorCode {
   if (error instanceof PayloadTooLargeError) return 'HANDOVER_PAYLOAD_TOO_LARGE'
   if (error instanceof SourceDisposedError) return 'SOURCE_NOT_INITIALIZED'
   if (error instanceof IndexAbortedError) return 'INDEXING_CANCELLED'
+  if (error instanceof UrlValidationError) return 'URL_INVALID'
+  if (error instanceof UrlInvalidHeadersError) return 'URL_INVALID_HEADERS'
+  if (error instanceof UrlCorsDeniedError) return 'URL_CORS_DENIED'
+  if (error instanceof UrlRedirectDeniedError) return 'URL_REDIRECT_DENIED'
   if (error instanceof UrlFetchError) return 'URL_FETCH_FAILED'
   if (error instanceof FallbackDeclinedError) return 'URL_FALLBACK_DECLINED'
   if (error instanceof SpoolQuotaExceededError) return 'OPFS_QUOTA_EXCEEDED'
@@ -571,10 +642,28 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
   await resetSourceState()
   const controller = new AbortController()
   activeInit = { operationId: request.operationId, controller }
+  const startedAt = performance.now()
   const downloader = new UrlDownloader({
     headers: request.headers,
     signal: controller.signal,
-    onProgress: (progress) => {
+    pageOrigin: request.pageOrigin,
+    // The spool exists before the first byte streams: wrap it immediately so
+    // rows become queryable (getRows/getLine/filter) during the download.
+    // Fires again if a mid-stream quota failure replaces the spool.
+    onSpoolCreated: (info) => {
+      // Replaces the previous wrapper if a mid-stream quota failure swapped
+      // the spool (its underlying spool was already disposed by the downloader).
+      if (source) {
+        void source.dispose().catch(() => {})
+      }
+      const src = new SpoolSource(urlFileName(info.finalUrl), info.spool)
+      source = src
+      indexer = new Indexer(src)
+      filterEngine = new FilterEngine(indexer, src)
+      activeIndexer = indexer
+      activeDeclaredBytes = info.declaredBytes
+    },
+    onProgress: async (progress) => {
       self.postMessage({
         ns: PROTOCOL_NAMESPACE,
         v: PROTOCOL_VERSION,
@@ -583,6 +672,22 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
         receivedBytes: progress.receivedBytes,
         totalBytes: progress.totalBytes,
       })
+      // Index the newly spooled bytes (awaited: an aborted incremental
+      // index fails the init). Map IndexAbortedError to the standard
+      // AbortError so a user cancel surfaces as CANCELLED, matching the
+      // fetch-abort path.
+      try {
+        await activeIndexer?.indexDelta({
+          operationId: request.operationId,
+          totalBytes: activeDeclaredBytes,
+          signal: controller.signal,
+        })
+      } catch (error) {
+        if (error instanceof IndexAbortedError) {
+          throw new DOMException('aborted', 'AbortError')
+        }
+        throw error
+      }
     },
     onFallbackRequest: async (info) => {
       self.postMessage({
@@ -590,7 +695,7 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
         v: PROTOCOL_VERSION,
         type: 'urlFallbackConfirm',
         operationId: request.operationId,
-        url: request.url,
+        url: redactUrl(request.url),
         declaredBytes: info.declaredBytes,
         reason: info.reason,
       })
@@ -601,19 +706,38 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
   })
   try {
     const result = await downloader.download(request.url)
-    source = new SpoolSource(result.name, result.spool)
-    indexer = new Indexer(source)
-    filterEngine = new FilterEngine(indexer, source)
+    const idx = indexer
+    if (!idx) throw new Error('URL spool was not initialized')
+    const stats = await idx.finishDelta()
 
-    const size = await result.spool.getSize()
+    currentGeneration++
+    const completeEvent: IndexCompleteEvent = {
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'indexComplete',
+      operationId: request.operationId,
+      totalRows: stats.totalRows,
+      totalBytes: Number(stats.totalBytes),
+      durationMs: Math.round(performance.now() - startedAt),
+    }
+    self.postMessage(completeEvent)
+
     const response = createSuccessResponse(request.requestId, {
       name: result.name,
-      size: Number(size),
+      size: Number(stats.totalBytes),
       type: 'url',
     })
     self.postMessage(response)
+  } catch (error) {
+    // A failed/aborted download leaves a disposed spool behind; drop the
+    // worker's reference so the next init starts from a clean state. The
+    // error still propagates to the generic handler for the response.
+    await resetSourceState()
+    throw error
   } finally {
     activeInit = null
+    activeIndexer = null
+    activeDeclaredBytes = undefined
     if (pendingFallbackConfirm?.operationId === request.operationId) {
       pendingFallbackConfirm = null
     }

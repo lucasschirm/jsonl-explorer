@@ -20,6 +20,15 @@
 
 import { THRESHOLDS } from '../config/adr.js'
 
+import {
+  UrlCorsDeniedError,
+  UrlRedirectDeniedError,
+  isCrossOrigin,
+  redactUrl,
+  sanitizeHeaders,
+  validateHttpUrl,
+} from '../url.js'
+
 import { PagedMemoryStore } from './pagedStore.js'
 import { OpfsSpool } from './opfsSpool.js'
 import { estimateStorageQuota } from './quota.js'
@@ -50,13 +59,33 @@ export interface OpfsStorageLike extends StorageEstimateProvider {
   getDirectory(): Promise<FileSystemDirectoryHandle>
 }
 
+export interface UrlSpoolCreatedInfo {
+  /** The spool receiving the response bytes (already selected). */
+  spool: ByteSpool
+  /** Final URL after redirects (the display name derives from it). */
+  finalUrl: string
+  /** Decoded byte count from Content-Length, when meaningful (R12). */
+  declaredBytes?: bigint
+}
+
 export interface UrlDownloaderOptions {
-  /** Extra request headers (e.g. Authorization). */
+  /** Extra request headers (e.g. Authorization); validated + sanitized. */
   headers?: Record<string, string>
   /** Aborts the fetch/stream; abort errors propagate to the caller. */
   signal?: AbortSignal
-  /** Progress callback after each received chunk. */
-  onProgress?: (progress: UrlProgressInfo) => void
+  /**
+   * Progress callback after each received chunk. May be async and is
+   * awaited: a rejection (e.g. an aborted incremental index) fails the
+   * download.
+   */
+  onProgress?: (progress: UrlProgressInfo) => void | Promise<void>
+  /**
+   * Fired once the spool is selected (before any bytes stream) and again
+   * if a mid-stream quota failure replaces it with a paged-memory spool.
+   */
+  onSpoolCreated?: (info: UrlSpoolCreatedInfo) => void
+  /** Page origin, used for the CORS failure heuristic. */
+  pageOrigin?: string
   /**
    * Consent handshake for the in-memory fallback. When consent is required
    * and no callback is provided, the fallback is DECLINED (never silent).
@@ -95,7 +124,7 @@ export class FallbackDeclinedError extends Error {
   readonly code = 'URL_FALLBACK_DECLINED' as const
 
   constructor(url: string) {
-    super(`In-memory fallback for "${url}" was not accepted`)
+    super(`In-memory fallback for "${redactUrl(url)}" was not accepted`)
     this.name = 'FallbackDeclinedError'
   }
 }
@@ -105,7 +134,9 @@ export interface UrlDownloadResult {
   spool: ByteSpool
   /** Decoded byte count declared via Content-Length, when meaningful (R12). */
   declaredBytes?: bigint
-  /** Display name derived from the URL. */
+  /** Final URL after redirects. */
+  finalUrl: string
+  /** Display name derived from the final URL. */
   name: string
 }
 
@@ -142,15 +173,21 @@ export class UrlDownloader {
    * Fetches the URL and streams all bytes into a spool.
    * Resolves with a sealed spool; on any failure (including abort) the
    * partial artifact, if any, is removed before rethrowing.
+   * The URL must be http(s) (`UrlValidationError`) and headers are
+   * validated/sanitized (`UrlInvalidHeadersError`) before any network I/O.
    */
   async download(url: string): Promise<UrlDownloadResult> {
+    validateHttpUrl(url)
+    const headers = sanitizeHeaders(this.options.headers)
     const fetchImpl = this.options.fetchImpl ?? fetch
-    const response0 = await this.fetchDocument(fetchImpl, url)
+    const response0 = await this.fetchDocument(fetchImpl, url, headers)
+    const finalUrl = response0.url || url
+    if (response0.redirected) this.assertHttpRedirectTarget(finalUrl)
     const declaredBytes = parseDeclaredBytes(response0.headers)
-    const name = urlFileName(url)
     let response = response0
     const spool0 = await this.pickInitialSpool(url, declaredBytes)
     let spool = spool0
+    this.options.onSpoolCreated?.({ spool, finalUrl, declaredBytes })
     let quotaRetries = 0
     try {
       for (;;) {
@@ -172,16 +209,26 @@ export class UrlDownloader {
           quotaRetries++
           await spool.dispose()
           spool = await this.memoryFallback(url, 'opfs-quota-exceeded', declaredBytes, received)
-          response = await this.fetchDocument(fetchImpl, url)
+          this.options.onSpoolCreated?.({ spool, finalUrl, declaredBytes })
+          response = await this.fetchDocument(fetchImpl, url, headers)
         }
       }
       await spool.seal()
       this.spool = spool
-      return { spool, declaredBytes, name }
+      return { spool, declaredBytes, finalUrl, name: urlFileName(finalUrl) }
     } catch (error) {
       // Failure/abort path: never leave an app-owned artifact behind.
       await spool.dispose().catch(() => {})
       throw error
+    }
+  }
+
+  /** A redirected response must still land on an http(s) URL. */
+  private assertHttpRedirectTarget(finalUrl: string): void {
+    try {
+      validateHttpUrl(finalUrl)
+    } catch {
+      throw new UrlRedirectDeniedError(`redirect target ${redactUrl(finalUrl)} is not http/https`)
     }
   }
 
@@ -192,23 +239,47 @@ export class UrlDownloader {
     if (spool) await spool.dispose()
   }
 
-  private async fetchDocument(fetchImpl: typeof fetch, url: string): Promise<Response> {
+  private async fetchDocument(
+    fetchImpl: typeof fetch,
+    url: string,
+    headers: Record<string, string>,
+  ): Promise<Response> {
     let response: Response
     try {
       response = await fetchImpl(url, {
-        headers: this.options.headers,
+        headers,
         credentials: 'omit',
         signal: this.options.signal,
       })
     } catch (error) {
       if (isAbortError(error)) throw error
-      const message = error instanceof Error ? error.message : String(error)
-      throw new UrlFetchError(`Failed to fetch ${url}: ${message}`)
+      throw this.classifyFetchFailure(error, url)
     }
     if (!response.ok) {
       throw new UrlFetchError(`HTTP ${response.status}${response.statusText ? `: ${response.statusText}` : ''}`, response.status)
     }
     return response
+  }
+
+  /**
+   * Classifies a failed fetch into typed errors. Browsers surface CORS and
+   * network failures both as an opaque `TypeError`, so cross-origin is a
+   * heuristic (documented); redirect loops are recognizable by message.
+   * Messages never include raw headers or unredacted URLs.
+   */
+  private classifyFetchFailure(error: unknown, url: string): Error {
+    if (error instanceof Error && /redirect/i.test(error.message)) {
+      return new UrlRedirectDeniedError(`redirect loop or blocked redirect for ${redactUrl(url)}`)
+    }
+    if (error instanceof TypeError && isCrossOrigin(url, this.options.pageOrigin)) {
+      return new UrlCorsDeniedError(url)
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    return new UrlFetchError(
+      error instanceof TypeError
+        ? `Failed to fetch ${redactUrl(url)} (network error)`
+        : `Failed to fetch ${redactUrl(url)}: ${message}`,
+    )
   }
 
   private async resolveStorage(): Promise<OpfsStorageLike | null> {
@@ -271,7 +342,7 @@ export class UrlDownloader {
       if (!value || value.length === 0) continue
       await spool.append(value)
       receivedBytes += value.length
-      this.options.onProgress?.({ receivedBytes, totalBytes })
+      await this.options.onProgress?.({ receivedBytes, totalBytes })
     }
   }
 

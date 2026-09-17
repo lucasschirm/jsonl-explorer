@@ -76,7 +76,7 @@ export interface ScanCallbacks {
 /** Incremental byte scanner that builds a queryable JSONL row index. */
 export class JsonlScanner {
   private readonly source: JsonlSource
-  private readonly chunkSize: number
+  private readonly chunkSizeBytes: number
   private readonly index: OffsetIndex
   private crlfMask: Uint8Array
   private crlfCapacity: number
@@ -89,12 +89,13 @@ export class JsonlScanner {
   private invalidUtf8Rows = 0
   private lastRowLfTerminated = true
   private complete = false
+  private drivenBy: 'none' | 'scan' | 'feed' = 'none'
   private lastProgressAt = 0
   private lastProgressRows = 0
 
   constructor(source: JsonlSource, options: ScannerOptions = {}) {
     this.source = source
-    this.chunkSize = options.chunkSize ?? ENGINE_DEFAULTS.indexChunkSize
+    this.chunkSizeBytes = options.chunkSize ?? ENGINE_DEFAULTS.indexChunkSize
     this.index = new OffsetIndex(options.initialRowCapacity ?? 1024)
     this.index.appendOffset(0n) // sentinel: start of the (pending) first row
     this.crlfMask = new Uint8Array(1024)
@@ -105,6 +106,16 @@ export class JsonlScanner {
   /** Number of fully committed rows (grows while a scan is in flight). */
   getRowCount(): number {
     return this.rowCount
+  }
+
+  /** True once any scan activity (scan or feed) has begun. */
+  isStarted(): boolean {
+    return this.drivenBy !== 'none'
+  }
+
+  /** Bytes per source read used by `scan()` (also a good feed step size). */
+  get chunkSize(): number {
+    return this.chunkSizeBytes
   }
 
   /** True once the scan has finished and the index is final. */
@@ -147,9 +158,12 @@ export class JsonlScanner {
   /**
    * Scans the source until end-of-file or abort.
    * Resolves with the final stats; throws `IndexAbortedError` on abort.
+   * A scanner runs in exactly one mode: `scan()` or `feed()`/`finish()`.
    */
   async scan(callbacks: ScanCallbacks = {}): Promise<ScanResult> {
     if (this.complete) throw new Error('Scanner already used')
+    if (this.drivenBy !== 'none') throw new Error('Cannot mix scan() and feed()')
+    this.drivenBy = 'scan'
     this.totalBytes = await this.source.getSize()
     const { onRow, onProgress, signal } = callbacks
     let offset = 0n
@@ -157,15 +171,46 @@ export class JsonlScanner {
     while (offset < this.totalBytes) {
       if (signal?.aborted) throw new IndexAbortedError()
       const remaining = this.totalBytes - offset
-      const want = remaining < BigInt(this.chunkSize) ? Number(remaining) : this.chunkSize
+      const want = remaining < BigInt(this.chunkSizeBytes) ? Number(remaining) : this.chunkSizeBytes
       const chunk = await this.source.readRange(offset, want)
-      this.processChunk(chunk, offset, onRow)
+      this.processFeed(chunk, offset, onRow)
       offset += BigInt(chunk.length)
       this.maybeReportProgress(onProgress, offset)
     }
 
+    return this.finish(this.totalBytes, { onRow })
+  }
+
+  /**
+   * Feeds one chunk of source bytes into an incremental scan. Chunks must
+   * arrive in order with each chunk's absolute `base` offset. Committed
+   * rows stay queryable (via getStart/getDisplayEnd/getRowCount) between
+   * feeds — this is how a download can surface rows while it streams.
+   */
+  feed(chunk: Uint8Array, base: bigint, callbacks: { onRow?: (row: CommittedRow) => void } = {}): void {
+    if (this.complete) throw new Error('Scanner already completed')
+    if (this.drivenBy === 'scan') throw new Error('Cannot mix scan() and feed()')
+    this.processFeed(chunk, base, callbacks.onRow)
+  }
+
+  /** Shared chunk processing for scan() and feed(). */
+  private processFeed(chunk: Uint8Array, base: bigint, onRow?: (row: CommittedRow) => void): void {
+    this.drivenBy = this.drivenBy === 'none' ? 'feed' : this.drivenBy
+    if (chunk.length === 0) return
+    this.processChunk(chunk, base, onRow)
+  }
+
+  /**
+   * Completes an incremental feed: commits the final (un-terminated) row,
+   * if any, and finalizes the index. `totalBytes` is the source's final
+   * size; it defines the final row's end offset and the result stats.
+   */
+  finish(totalBytes: bigint, callbacks: { onRow?: (row: CommittedRow) => void } = {}): ScanResult {
+    if (this.complete) throw new Error('Scanner already completed')
+    if (this.drivenBy === 'none') throw new Error('Scanner not started (scan() or feed() first)')
+    this.totalBytes = totalBytes
     if (this.carryLen > 0) {
-      this.commitFinalRow(onRow)
+      this.commitFinalRow(callbacks.onRow)
     }
     this.complete = true
     return {
