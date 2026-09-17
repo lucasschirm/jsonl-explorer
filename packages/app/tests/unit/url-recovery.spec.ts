@@ -132,6 +132,25 @@ describe('URL startup recovery', () => {
     wrapper.unmount()
   })
 
+  it('stays on /explorer when a file is already loaded (initialized navigation)', async () => {
+    const fileStore = useFileStore()
+    const pending = fileStore.loadFile(new File(['a\n'], 'a.jsonl'))
+    await vi.waitFor(() => expect(worker.posted.length).toBe(1))
+    const init = worker.posted[0] as PostedInit
+    worker.emit(success(init.requestId as string, { name: 'a.jsonl', size: 2, type: 'file' }))
+    await pending
+
+    const wrapper = mountExplorer({})
+    await flushPromises()
+
+    // No redirect, no toast, no bootstrap: the guard passes on hasFile.
+    expect(pushed).toEqual([])
+    const toastStore = useToastStore()
+    expect(toastStore.toasts.length).toBe(0)
+    expect(wrapper.find('[data-testid="upload-another"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('opens the URL modal prefilled on the landing page after a failure', async () => {
     // Simulate the explorer bootstrap failure handoff.
     useUrlRecovery().setRecoveredUrl('https://recovered.example.com/data.jsonl')

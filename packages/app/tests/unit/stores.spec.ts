@@ -75,7 +75,7 @@ describe('file store', () => {
     expect(filterStore.query).toBe('')
   })
 
-  it('reset() clears the source worker-side (dispose RPC, no terminate) and local metadata', async () => {
+  it('reset() fully disposes the engine (dispose RPC + terminate) and clears local metadata', async () => {
     const fileStore = useFileStore()
     await fileStore.loadFile(new File(['a\n'], 'a.jsonl'))
     const worker = workers[0]!
@@ -84,9 +84,16 @@ describe('file store', () => {
 
     expect(fileStore.hasFile).toBe(false)
     expect(fileStore.metadata).toBeNull()
+    // The worker-side dispose RPC runs first (spool cleanup), then the
+    // worker is terminated — no warm worker is kept across sources.
     const disposeRpcs = worker.posted.filter((m) => (m as { type?: string }).type === 'dispose')
     expect(disposeRpcs.length).toBe(1)
-    expect(worker.terminated).toBe(0)
+    expect(worker.terminated).toBe(1)
+
+    // The next load lazily creates a fresh engine (and worker).
+    await fileStore.loadFile(new File(['b\n'], 'b.jsonl'))
+    expect(workers.length).toBe(2)
+    expect(workers[1]).not.toBe(worker)
   })
 
   it('concurrent opens surface a typed error and do not clear the in-flight load', async () => {

@@ -91,12 +91,18 @@ export const useFileStore = defineStore('file', () => {
     }
   }
 
-  /** Clears the source (worker-side) and all local metadata. */
+  /**
+   * "Upload another file" (PLAN 4.3): clear all local state and fully
+   * dispose the engine — worker terminated, worker-side source state and
+   * spool cleaned via the dispose RPC before termination, worker-side
+   * caches gone with the worker. The next load lazily creates a fresh
+   * engine, so no resources leak across sources.
+   */
   async function reset() {
     loadError.value = null
-    await engineApi.closeSource()
     metadata.value = null
     resetDerivedState()
+    await engineApi.disposeEngine()
   }
 
   function getEngine(): JsonlEngine | null {

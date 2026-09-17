@@ -85,16 +85,27 @@ function clearSearch() {
   toastStore.info('Search cleared', 'Search')
 }
 
+/**
+ * "Upload another file": fully dispose the engine (worker, spool, caches)
+ * and return to landing. Awaited so the dispose RPC (worker-side spool
+ * cleanup) is posted before we leave the page.
+ */
 async function resetFile() {
-  fileStore.reset()
+  await fileStore.reset()
   await router.push('/')
 }
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col">
-    <!-- Header -->
-    <header class="navbar bg-base-100 border-b border-base-300 px-4">
+  <!--
+    Explorer shell (TSK0020): the split layout targets a 1024px minimum
+    viewport (ADR "Explorer shell and minimum viewport"); below that the
+    root keeps its min width and the page scrolls horizontally instead of
+    stacking the panels.
+  -->
+  <div class="min-h-screen min-w-[1024px] flex flex-col">
+    <!-- Header: small (48px) and fixed — the panels scroll inside it, never it. -->
+    <header class="navbar h-12 bg-base-100 border-b border-base-300 px-4">
       <div class="navbar-start">
         <span class="text-lg font-semibold text-base-content">JSONL Explorer</span>
       </div>
@@ -103,7 +114,16 @@ async function resetFile() {
       </div>
       <div class="navbar-end gap-2">
         <nuxt-link to="/docs" class="btn btn-ghost btn-sm">Docs</nuxt-link>
-        <button class="btn btn-primary btn-sm" @click="resetFile">Upload another file</button>
+        <!--
+          Upload another file (PLAN 4.3): back to landing; the engine is
+          fully disposed (worker terminated, spool cleaned worker-side,
+          caches gone with the worker) so nothing leaks across sources.
+        -->
+        <button
+          class="btn btn-primary btn-sm"
+          data-testid="upload-another"
+          @click="resetFile"
+        >Upload another file</button>
       </div>
     </header>
 

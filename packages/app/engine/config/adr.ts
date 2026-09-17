@@ -397,6 +397,32 @@ export const ENGINE_DEFAULTS = {
 } as const
 
 // ============================================================================
+// EXPLORER SHELL (TSK0020)
+// ============================================================================
+/**
+ * Explorer shell and minimum viewport (TSK0020):
+ * - The /explorer shell is a split view: fixed-width row list (left) and a
+ *   flexible detail pane (right) under a small (48px) fixed header. The
+ *   panels scroll independently; the header never scrolls away.
+ * - Minimum supported viewport: 1024px wide. Below that the page keeps its
+ *   1024px min width and scrolls horizontally instead of stacking the
+ *   panels. Stacking is rejected: data exploration is a desktop activity,
+ *   and a stacked split view would break the row/detail mental model and
+ *   the virtualized row list's fixed-height assumptions.
+ * - The guard (R5) is three distinct paths: (1) `?url=` bootstrap present
+ *   -> consume it first (never redirect before attempting it); (2) a
+ *   source already loaded -> stay (initialized navigation); (3) neither
+ *   -> redirect to / with an info toast (refresh loses in-memory state by
+ *   design).
+ * - "Upload another file" FULLY disposes the engine (not just the source):
+ *   the worker-side dispose RPC (spool cleanup) is posted, the worker is
+ *   terminated, and all worker-side caches go with it. The next load
+ *   lazily creates a fresh engine, so no resources leak across sources.
+ *
+ * References: PLAN.md 4.3 (guard R5, header, layout)
+ */
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 export const ADR_CONFIG = {
