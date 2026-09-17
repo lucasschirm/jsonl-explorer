@@ -28,7 +28,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test:unit": "vitest run",
-    "lint": "eslint . --ext .ts --cache"
+    "lint": "eslint . --cache"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

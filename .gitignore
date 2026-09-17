@@ -146,3 +146,5 @@ vite.config.ts.timestamp-*
 .vite/
 
 tmp/
+# CLI staged site (generated from the app build; packed into the tarball)
+/packages/cli/site/

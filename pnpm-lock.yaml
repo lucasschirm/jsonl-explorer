@@ -119,23 +119,19 @@ importers:
         version: 1.6.1(@types/node@20.19.43)(happy-dom@13.10.1)(lightningcss@1.32.0)(terser@5.51.2)
 
   packages/cli:
-    dependencies:
+    devDependencies:
       '@fastify/static':
         specifier: ^7.0.0
         version: 7.0.4
-      '@jsonl-explorer/shared':
-        specifier: workspace:*
-        version: link:../shared
+      '@types/node':
+        specifier: ^20.11.0
+        version: 20.19.43
       fastify:
         specifier: ^4.26.0
         version: 4.29.1
       open:
         specifier: ^10.0.0
         version: 10.2.0
-    devDependencies:
-      '@types/node':
-        specifier: ^20.11.0
-        version: 20.19.43
       tsup:
         specifier: ^8.0.0
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(tsx@4.23.13)(typescript@5.9.3)(yaml@2.9.1)

@@ -17,6 +17,8 @@ npx jsonlex data.jsonl
 npm install -g jsonlex
 jsonlex data.jsonl
 ```
+The package is self-contained: the server and the explorer site (`--local`
+mode) are bundled, so installing it pulls **no runtime dependencies**.
 
 ## Modes
 
@@ -55,6 +57,14 @@ jsonlex data.jsonl --local
 | `--help` | Show help |
 | `--version` | Show version |
 
+### Argument behavior
+
+- Exactly one positional (the file); extra arguments are a typed error.
+- `--` ends option parsing, so dash-prefixed names work:
+  `jsonlex -- -weird.jsonl`.
+- Duplicate options: the last occurrence wins.
+- Unknown options are a typed, actionable error (with a `--help` hint).
+
 ## Security
 
 - **Capability token**: 256-bit random path, unguessable
@@ -67,4 +77,5 @@ jsonlex data.jsonl --local
 ## Requirements
 
 - Node.js 20.11.0+
-- File must exist and be readable
+- The file must exist and be a regular file (validated before the server
+  starts; failures are one-line typed errors)
