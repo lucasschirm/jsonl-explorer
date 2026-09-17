@@ -100,8 +100,10 @@ describe('explorer shell (TSK0020)', () => {
     wrapper.unmount()
   })
 
-  it('the split layout keeps the 1024px minimum viewport (no panel stacking)', () => {
+  it('the split layout keeps the 1024px minimum viewport (no panel stacking)', async () => {
+    await loadFile('a.jsonl')
     const wrapper = mountExplorer()
+    await flushPromises()
     const root = wrapper.find('div')
     expect(root.classes()).toContain('min-w-[1024px]')
     // The left panel is fixed width, the right one flexes — never stacked.

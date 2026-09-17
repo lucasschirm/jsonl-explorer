@@ -5,10 +5,12 @@ import { useFileStore } from '~/stores/file'
 import { useExporterStore } from '~/stores/exporter'
 import { useToastStore } from '~/stores/toasts'
 import { useUrlRecovery } from '~/composables/useUrlRecovery'
+import { useHandover } from '~/composables/useHandover'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { decideUrlInput } from '~/utils/urlIntake'
 import { isEditableEventTarget, isModalOpen } from '~/utils/keyboard'
 import LoadingPanel from '~/components/loading/LoadingPanel.vue'
+import FileDropZone from '~/components/landing/FileDropZone.vue'
 import RowList from '~/components/explorer/RowList.vue'
 import StatusBar from '~/components/explorer/StatusBar.vue'
 import DetailPanel from '~/components/explorer/DetailPanel.vue'
@@ -21,6 +23,9 @@ const route = useRoute()
 const fileStore = useFileStore()
 const toastStore = useToastStore()
 const recovery = useUrlRecovery()
+// Destructure: top-level refs are template-unwrapped (a nested
+// `handover.waiting` would be the Ref object — always truthy).
+const { waiting: handoverWaiting, start: startHandover } = useHandover()
 const engineApi = useJsonlEngine()
 const exporterStore = useExporterStore()
 
@@ -88,6 +93,9 @@ onMounted(async () => {
   // Guard: redirect to landing if no file loaded (only when there was no
   // bootstrap to report on — a failed bootstrap already navigated + toasted).
   if (!hadBootstrap && !fileStore.hasFile) {
+    // Embedded (window.open / iframe): start the handover handshake and
+    // stay on this page — the host posts `load` after `ready` (TSK0037).
+    if (startHandover()) return
     toastStore.info('No file loaded. Please open a JSONL file first.', 'No file')
     await router.push('/')
   }
@@ -228,6 +236,18 @@ async function resetFile() {
 
     <!-- Main content -->
     <main class="flex-1 flex overflow-hidden">
+      <!-- No file yet: handover wait (embedded) + manual drop/pick (TSK0037) -->
+      <div
+        v-if="!fileStore.hasFile"
+        class="flex-1 flex flex-col items-center justify-center gap-3 p-8"
+      >
+        <p v-if="handoverWaiting" class="text-sm" data-testid="handover-waiting">
+          Waiting for data from the host page…
+        </p>
+        <p class="text-sm opacity-60">…or drop a JSONL file here.</p>
+        <FileDropZone class="w-full max-w-md" />
+      </div>
+      <template v-else>
       <!-- Left panel - Row list -->
       <aside class="w-96 border-r border-base-300 flex flex-col overflow-hidden bg-base-100">
         <!-- Filter bar (TSK0028): literal text + jq, explicit run only. -->
@@ -246,6 +266,7 @@ async function resetFile() {
       <aside class="flex-1 flex flex-col overflow-hidden bg-base-100">
         <DetailPanel />
       </aside>
+      </template>
     </main>
 
     <!-- Raw view modal placeholder -->
