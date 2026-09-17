@@ -33,6 +33,14 @@ export type DetailViewMode = 'format' | 'compact'
  *
  * Presentation: `viewMode` (format/compact) is presentation-only. It
  * never posts setEdit and never mutates the worker's text.
+ *
+ * Two edit sessions (mutually exclusive by row state):
+ * - TREE (TSK0031): valid rows — one node's value, path-based, implicit
+ *   Enter/blur commit.
+ * - RAW (TSK0032): invalid rows — the WHOLE row in a textarea with
+ *   explicit Save/Cancel controls (no implicit commits: a multi-line
+ *   draft must never save itself on a stray blur).
+ * Both mirror through the edits store (one setEdit) and reload after.
  */
 export const useDetailStore = defineStore('detail', () => {
   const rowStore = useRowStore()
@@ -139,7 +147,69 @@ export const useDetailStore = defineStore('detail', () => {
       toastStore.error(message, 'Edit failed')
       return
     }
-    await load(id) // re-render: the tree now shows the edited document
+    // Reload only when this row is STILL the active one: a row switch
+    // during the RPC already started its own load, and this reload would
+    // bump the token and steal the new selection's answer.
+    if (selectionStore.activeLineId === id) {
+      await load(id) // re-render: the tree now shows the edited document
+    }
+  }
+
+  // --- Raw row editing (TSK0032) ------------------------------------------
+  /** True while the raw (whole-row) editor is open — invalid rows only. */
+  const rawEditing = ref(false)
+  /** Raw editor input: the whole row, single line.
+   *  NOTE: never commits implicitly (no blur handler) — a multi-line
+   *  draft must not save itself on focus loss. */
+  const rawDraft = ref('')
+
+  /** Open the raw editor for an INVALID row. Valid rows edit through the
+   *  tree instead (the two sessions are mutually exclusive by state). */
+  function startRawEdit(): void {
+    if (status.value !== 'ready' || text.value === null) return
+    if (parsed.value?.ok !== false) return
+    rawEditing.value = true
+    rawDraft.value = text.value
+  }
+
+  /** Cancel control: discard the draft, no RPC. */
+  function cancelRawEdit(): void {
+    if (!rawEditing.value) return
+    rawEditing.value = false
+    rawDraft.value = ''
+  }
+
+  /**
+   * Save control: the draft becomes the row's override (one whole-row
+   *  setEdit). Local validation (CR/LF, byte budget) and worker
+   *  rejections surface as ONE typed toast while the session STAYS open
+   *  (the draft is kept) — nothing fails silently. A successful commit
+   *  reloads the row: corrected-to-valid rows render the tree
+   *  immediately, and the worker already re-evaluated the active filter
+   *  membership for that line (stable ID).
+   */
+  async function commitRawEdit(): Promise<void> {
+    if (!rawEditing.value) return
+    const id = lineId.value
+    if (id === null) return
+    const draft = rawDraft.value
+    try {
+      await useEditsStore().setEdit(id, draft)
+    } catch (error) {
+      // Typed validation (EditValidationError / EditBudgetError) or a
+      // worker rejection: keep the draft so the user can fix and retry.
+      toastStore.error(
+        error instanceof Error ? error.message : 'Failed to apply the edit',
+        'Edit failed',
+      )
+      return
+    }
+    rawEditing.value = false
+    rawDraft.value = ''
+    // Same guard as commitEdit: never steal a newer selection's load.
+    if (selectionStore.activeLineId === id) {
+      await load(id) // re-render: tree if corrected, badge either way
+    }
   }
 
   /**
@@ -150,6 +220,7 @@ export const useDetailStore = defineStore('detail', () => {
     const id = lineId.value
     if (id === null || !useEditsStore().isEdited(id)) return
     if (isEditing.value) cancelEdit()
+    if (rawEditing.value) cancelRawEdit()
     try {
       await useEditsStore().resetEdit(id)
     } catch (error) {
@@ -157,12 +228,15 @@ export const useDetailStore = defineStore('detail', () => {
       toastStore.error(message, 'Reset failed')
       return
     }
-    await load(id)
+    if (selectionStore.activeLineId === id) {
+      await load(id)
+    }
   }
 
   function resetDetail(): void {
     loadToken += 1 // any in-flight answer becomes stale
     cancelEdit() // a selection change never carries a draft across rows
+    cancelRawEdit()
     lineId.value = null
     text.value = null
     byteLength.value = 0
@@ -176,6 +250,7 @@ export const useDetailStore = defineStore('detail', () => {
   async function load(id: number): Promise<void> {
     const token = ++loadToken
     cancelEdit() // an open editor never carries across rows or reloads
+    cancelRawEdit()
     lineId.value = id
     status.value = 'loading'
     loadError.value = null
@@ -245,6 +320,11 @@ export const useDetailStore = defineStore('detail', () => {
     startEdit,
     cancelEdit,
     commitEdit,
+    rawEditing,
+    rawDraft,
+    startRawEdit,
+    cancelRawEdit,
+    commitRawEdit,
     resetLine,
     resetDetail,
   }

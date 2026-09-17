@@ -9,7 +9,7 @@
     "build": "nuxi build",
     "generate": "nuxi generate",
     "preview": "nuxi preview",
-    "lint": "eslint . --ext .ts,.vue,.js --cache",
+    "lint": "eslint . --cache",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test:unit": "vitest run --config vitest.config.ts",
     "smoke:jq": "node scripts/jq-smoke.mjs",

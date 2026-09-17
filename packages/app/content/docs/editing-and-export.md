@@ -80,11 +80,31 @@ the line cancels any open session (a draft never carries across rows).
 - A worker-rejected edit (e.g. over the 1 MiB budget, CR/LF) toasts the
   reason and leaves both the tree and the override map untouched.
 
+### Raw Editing (Invalid Rows)
+
+A row that is not valid JSON cannot use the tree, so it gets an explicit
+**Edit row** control with a single-line textarea and **Save / Cancel**
+buttons — no implicit commits (a multi-line draft must never save itself on
+a stray blur):
+
+- **Save** mirrors the draft as the row's whole-row override (one `setEdit`,
+  same storage rules as tree edits) and reloads the panel. Correcting the
+  row to valid JSON immediately switches the panel to the tree, and the
+  worker has already re-evaluated the active filter's membership for that
+  line (stable line ID).
+- **Newlines are rejected.** A literal CR or LF would split the row into
+  extra export rows, so the save is refused with one typed toast and the
+  draft is kept for fixing.
+- **Budget warning.** When the draft exceeds the 1 MiB override budget the
+  editor shows a warning and disables Save before the click.
+- **Cancel** discards the draft; no RPC is sent.
+
 ### Reset Line
 
 The toolbar's **Reset** button (enabled only while the row has an accepted
-override) removes the override: the original source row returns, the
-"edited" badges clear, and the active filter re-evaluates that row.
+override) removes the override: the original source row returns — including
+the original *invalid* bytes, when the row was raw-edited — the "edited"
+badges clear, and the active filter re-evaluates that row.
 
 ## Format / Compact
 

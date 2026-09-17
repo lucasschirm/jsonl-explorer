@@ -474,3 +474,172 @@ describe('DetailPanel inline tree editing (TSK0031)', () => {
     expect(wrapper.find('[data-testid="json-edit-input"]').exists()).toBe(false)
   })
 })
+
+describe('DetailPanel raw row editing (TSK0032)', () => {
+  let pinia: Pinia
+  let worker: FakeWorker
+  let wrapper: VueWrapper<InstanceType<typeof DetailPanel>>
+  let selectionStore: ReturnType<typeof useSelectionStore>
+  let detailStore: ReturnType<typeof useDetailStore>
+  let editsStore: ReturnType<typeof useEditsStore>
+  let toastStore: ReturnType<typeof useToastStore>
+
+  const getLineOps = (): PostedOp[] =>
+    worker.posted.filter((m) => (m as PostedOp).type === 'getLine') as PostedOp[]
+  const setEditOps = (): PostedOp[] =>
+    worker.posted.filter((m) => (m as PostedOp).type === 'setEdit') as PostedOp[]
+
+  async function initSource(): Promise<void> {
+    const pending = useJsonlEngine().open('file', new File(['a\n'], 't.jsonl'))
+    await vi.waitFor(() => {
+      expect(worker.posted.some((m) => (m as PostedOp).type === 'initFile')).toBe(true)
+    })
+    const op = worker.posted.find((m) => (m as PostedOp).type === 'initFile') as PostedOp
+    worker.emit(success(op.requestId!, { name: 't.jsonl', size: 2, type: 'file' }))
+    await pending
+  }
+
+  async function openInvalidRow(text: string): Promise<void> {
+    selectionStore.activate(1, 0)
+    await vi.waitFor(() => expect(getLineOps().length).toBe(1))
+    worker.emit(success(getLineOps()[0]!.requestId!, { lineId: 1, text, isEdited: false }))
+    await vi.waitFor(() => expect(detailStore.status).toBe('ready'))
+    await nextTick()
+  }
+
+  /** Answer a raw save (setEdit) and its reload. */
+  async function settleSave(reloadText: string, getLinesBefore: number): Promise<void> {
+    await vi.waitFor(() => expect(setEditOps().length).toBe(1))
+    worker.emit(success(setEditOps()[0]!.requestId!, { lineId: 1, isEdited: true, newGeneration: 2, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(getLinesBefore + 1))
+    worker.emit(success(getLineOps().slice(-1)[0]!.requestId!, { lineId: 1, text: reloadText, isEdited: true }))
+    await vi.waitFor(() => expect(detailStore.text).toBe(reloadText))
+    await nextTick()
+  }
+
+  beforeEach(() => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    resetJsonlEngineForTests()
+    worker = new FakeWorker()
+    useJsonlEngine({ workerFactory: () => worker as unknown as Worker })
+    selectionStore = useSelectionStore()
+    detailStore = useDetailStore()
+    editsStore = useEditsStore()
+    toastStore = useToastStore()
+    wrapper = mount(DetailPanel, { global: { plugins: [pinia] } })
+  })
+
+  afterEach(() => {
+    wrapper.unmount()
+    document.body.innerHTML = ''
+  })
+
+  it('an invalid row offers an explicit Edit control; Cancel discards (no RPC)', async () => {
+    await initSource()
+    await openInvalidRow('not json, just text')
+
+    expect(wrapper.find('[data-testid="detail-invalid-banner"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-raw-edit-btn"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="detail-raw-edit-btn"]').trigger('click')
+    const editor = wrapper.find('[data-testid="detail-raw-editor"]')
+    expect(editor.exists()).toBe(true)
+    expect((editor.element as HTMLTextAreaElement).value).toBe('not json, just text')
+    expect(wrapper.find('[data-testid="detail-raw-save-btn"]').exists()).toBe(true)
+
+    await editor.setValue('changed my mind')
+    await wrapper.find('[data-testid="detail-raw-cancel-btn"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-raw-editor"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-invalid-banner"]').exists()).toBe(true)
+    expect(setEditOps().length).toBe(0)
+    expect(detailStore.text).toBe('not json, just text')
+  })
+
+  it('saving a corrected (valid) row renders the tree and shows the badge', async () => {
+    await initSource()
+    await openInvalidRow('{"a":1,}') // trailing comma: invalid
+
+    await wrapper.find('[data-testid="detail-raw-edit-btn"]').trigger('click')
+    const editor = wrapper.find('[data-testid="detail-raw-editor"]')
+    await editor.setValue('{"a":1}')
+    const commit = detailStore.commitRawEdit()
+    await settleSave('{"a":1}', 1)
+    await commit
+
+    // Corrected to valid JSON: the tree replaces the raw view.
+    expect(wrapper.find('[data-testid="detail-invalid-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="json-tree"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="json-tree"]').text()).toContain('a')
+    expect(wrapper.find('[data-testid="json-tree"]').text()).toContain('1')
+    expect(wrapper.find('[data-testid="detail-edited-badge"]').exists()).toBe(true)
+    expect(editsStore.isEdited(1)).toBe(true)
+  })
+
+  it('a multiline save is rejected: toast, editor stays, draft kept, no RPC', async () => {
+    await initSource()
+    await openInvalidRow('not json')
+
+    await wrapper.find('[data-testid="detail-raw-edit-btn"]').trigger('click')
+    const editor = wrapper.find('[data-testid="detail-raw-editor"]')
+    // A textarea accepts newlines: the save must refuse them explicitly.
+    await editor.setValue('line one\nline two')
+    await wrapper.find('[data-testid="detail-raw-save-btn"]').trigger('click')
+    await vi.waitFor(() =>
+      expect(toastStore.toasts.some((t) => t.title === 'Edit failed')).toBe(true),
+    )
+
+    expect(setEditOps().length).toBe(0)
+    expect(wrapper.find('[data-testid="detail-raw-editor"]').exists()).toBe(true)
+    expect((editor.element as HTMLTextAreaElement).value).toBe('line one\nline two')
+  })
+
+  it('an over-budget draft shows a warning and disables Save', async () => {
+    await initSource()
+    await openInvalidRow('not json')
+
+    await wrapper.find('[data-testid="detail-raw-edit-btn"]').trigger('click')
+    const editor = wrapper.find('[data-testid="detail-raw-editor"]')
+    const huge = 'x'.repeat(1024 * 1024 + 1)
+    await editor.setValue(huge)
+
+    expect(wrapper.find('[data-testid="detail-raw-budget-warn"]').exists()).toBe(true)
+    const save = wrapper.find('[data-testid="detail-raw-save-btn"]')
+    expect((save.element as HTMLButtonElement).disabled).toBe(true)
+
+    // Shrink under the budget: the warning clears and Save re-enables.
+    await editor.setValue('small again')
+    expect(wrapper.find('[data-testid="detail-raw-budget-warn"]').exists()).toBe(false)
+    expect((save.element as HTMLButtonElement).disabled).toBe(false)
+    await wrapper.find('[data-testid="detail-raw-cancel-btn"]').trigger('click')
+  })
+
+  it('Reset restores the original invalid source row after a raw edit', async () => {
+    await initSource()
+    await openInvalidRow('not json')
+
+    await wrapper.find('[data-testid="detail-raw-edit-btn"]').trigger('click')
+    const editor = wrapper.find('[data-testid="detail-raw-editor"]')
+    await editor.setValue('fixed text')
+    const commit = detailStore.commitRawEdit()
+    await settleSave('fixed text', 1)
+    await commit
+    expect(editsStore.isEdited(1)).toBe(true)
+
+    await wrapper.find('[data-testid="detail-reset-btn"]').trigger('click')
+    await vi.waitFor(() => expect(setEditOps().length).toBe(2))
+    expect(setEditOps()[1]!.text).toBeUndefined() // reset = no text
+    worker.emit(success(setEditOps()[1]!.requestId!, { lineId: 1, isEdited: false, newGeneration: 3, filteredIndex: 0 }))
+    await vi.waitFor(() => expect(getLineOps().length).toBe(3))
+    worker.emit(success(getLineOps()[2]!.requestId!, { lineId: 1, text: 'not json', isEdited: false }))
+    await vi.waitFor(() => expect(detailStore.text).toBe('not json'))
+    await nextTick()
+
+    expect(editsStore.isEdited(1)).toBe(false)
+    expect(wrapper.find('[data-testid="detail-invalid-banner"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-raw"]').text()).toBe('not json')
+    expect((wrapper.find('[data-testid="detail-reset-btn"]').element as HTMLButtonElement).disabled).toBe(true)
+  })
+})

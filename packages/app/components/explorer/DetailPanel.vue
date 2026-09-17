@@ -38,6 +38,16 @@ const isLineEdited = computed(
 const rawOpen = ref(false)
 const copying = ref(false)
 
+/** Raw editor: Save is blocked (with a visible warning) when the draft
+ *  exceeds the single-override byte budget — the worker would reject it
+ *  anyway, so the UI says so BEFORE the click (TSK0032). */
+const rawExceedsBudget = computed(
+  () =>
+    detailStore.rawEditing &&
+    detailStore.lineId !== null &&
+    editsStore.wouldExceedBudget(detailStore.lineId, detailStore.rawDraft),
+)
+
 /** Copy the selected row's FULL text (loaded via getLine). For valid
  *  JSON the Format/Compact mode decides the serialization (the
  *  presentation-only modes are the copy/export consumer); invalid or
@@ -181,19 +191,73 @@ function confirmTree(): void {
       <!-- Valid JSON: the collapsible tree -->
       <JsonTree v-if="showTree" :value="detailStore.parsed!.value!" />
 
-      <!-- Invalid JSON: banner + raw text -->
+      <!-- Invalid JSON: read mode (banner + raw text + Edit) or the
+           explicit raw editor (Save/Cancel; no implicit commits). -->
       <template v-else-if="showInvalidRaw">
-        <div class="alert alert-warning text-sm mb-3" role="alert" data-testid="detail-invalid-banner">
-          <svg class="shrink-0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-            <line x1="12" y1="9" x2="12" y2="13" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
-          <span>
-            Not valid JSON ({{ detailStore.parsed?.error }}) — showing raw text.
-          </span>
-        </div>
-        <pre class="whitespace-pre-wrap break-all font-mono text-sm bg-base-200 rounded p-3" data-testid="detail-raw">{{ detailStore.text }}</pre>
+        <template v-if="!detailStore.rawEditing">
+          <div class="alert alert-warning text-sm mb-3" role="alert" data-testid="detail-invalid-banner">
+            <svg class="shrink-0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>
+              Not valid JSON ({{ detailStore.parsed?.error }}) — showing raw text.
+            </span>
+          </div>
+          <pre class="whitespace-pre-wrap break-all font-mono text-sm bg-base-200 rounded p-3" data-testid="detail-raw">{{ detailStore.text }}</pre>
+          <div class="mt-3">
+            <button
+              class="btn btn-sm btn-ghost"
+              data-testid="detail-raw-edit-btn"
+              title="Edit this row as raw text (single line)"
+              @click="detailStore.startRawEdit()"
+            >
+              Edit row
+            </button>
+          </div>
+        </template>
+        <template v-else>
+          <div class="alert alert-info text-sm mb-3" data-testid="detail-raw-editing-banner">
+            <span>
+              Editing the whole row as raw text — one line only (newlines are
+              rejected). Correcting it to valid JSON switches this panel to the
+              tree and updates the active filter.
+            </span>
+          </div>
+          <textarea
+            v-model="detailStore.rawDraft"
+            class="textarea textarea-bordered font-mono text-sm w-full min-h-40"
+            spellcheck="false"
+            aria-label="Edit the raw row text"
+            data-testid="detail-raw-editor"
+          ></textarea>
+          <p
+            v-if="rawExceedsBudget"
+            class="text-warning text-xs mt-2"
+            data-testid="detail-raw-budget-warn"
+          >
+            This edit exceeds the {{ ENGINE_DEFAULTS.editMaxBytes / (1024 * 1024) }} MiB
+            budget — Save is disabled.
+          </p>
+          <div class="mt-3 flex gap-2">
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="detail-raw-save-btn"
+              :disabled="rawExceedsBudget"
+              @click="detailStore.commitRawEdit()"
+            >
+              Save
+            </button>
+            <button
+              class="btn btn-ghost btn-sm"
+              data-testid="detail-raw-cancel-btn"
+              @click="detailStore.cancelRawEdit()"
+            >
+              Cancel
+            </button>
+          </div>
+        </template>
       </template>
 
       <!-- Large row: raw by default, confirm before parsing the tree -->
