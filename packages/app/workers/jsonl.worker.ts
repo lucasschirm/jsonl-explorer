@@ -65,6 +65,20 @@ import {
 import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
 import type { ScanProgress, ScanResult } from '../engine/scanner.js'
 import { offsetToNumber } from '../engine/indexer.js'
+import { ENGINE_DEFAULTS } from '../engine/config/adr.js'
+import { escapeForSingleLine } from '../utils/rowPreview.js'
+
+/** Max ORIGINAL-row bytes transferred per list row (preview cap, R12). */
+const PREVIEW_ROW_BYTES = ENGINE_DEFAULTS.rowPreviewByteLimit
+
+/** Decode row bytes; invalid UTF-8 becomes U+FFFD (never throws). */
+function decodeRowBytes(bytes: Uint8Array): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  }
+}
 
 // Re-export shared types
 export type {
@@ -167,7 +181,13 @@ class Indexer {
     this.abortController?.abort()
   }
 
-  async index(): Promise<{ totalRows: number; totalBytes: number; invalidUtf8Rows: number }> {
+  /**
+   * Runs the scan and emits indexProgress events. The indexComplete event
+   * is emitted by the CALLER (handleIndex): it owns the generation counter,
+   * which must only bump on success, and the event must carry the
+   * post-commit generation (R-cache invalidation).
+   */
+  async index(): Promise<{ totalRows: number; totalBytes: number; invalidUtf8Rows: number; durationMs: number }> {
     // A scanner is single-use: after completion or abort, start a fresh one
     // so index requests can be retried (e.g. after a user cancel). A
     // feed-driven scanner (URL download) must also be replaced: `scan()`
@@ -189,22 +209,11 @@ class Indexer {
       if (error instanceof IndexAbortedError) this.scanAborted = true
       throw error
     }
-    if (this.operationId) {
-      const event: IndexCompleteEvent = {
-        ns: 'jsonl-explorer',
-        v: 1,
-        type: 'indexComplete',
-        operationId: this.operationId,
-        totalRows: result.totalRows,
-        totalBytes: Number(result.totalBytes),
-        durationMs: Math.round(performance.now() - startedAt),
-      }
-      self.postMessage(event)
-    }
     return {
       totalRows: result.totalRows,
       totalBytes: Number(result.totalBytes),
       invalidUtf8Rows: result.invalidUtf8Rows,
+      durationMs: Math.round(performance.now() - startedAt),
     }
   }
 
@@ -330,6 +339,12 @@ class FilterEngine {
   private state: FilterState
   private lastProgressTime = 0
   private lastProgressRows = 0
+  /**
+   * False until a filter completes: the view is the UNFILTERED identity
+   * (display index i == row i). A filter that matches nothing is still a
+   * filtered (empty) view — the flag, not the count, disambiguates.
+   */
+  private hasFilter = false
 
   constructor(indexer: Indexer, source: JsonlSource) {
     this.indexer = indexer
@@ -343,6 +358,22 @@ class FilterEngine {
       operationId: null,
       cancelled: false,
     }
+  }
+
+  /** True once a filter completed; false = unfiltered identity view. */
+  isFiltered(): boolean {
+    return this.hasFilter
+  }
+
+  /** Row count of the current view (all committed rows when unfiltered). */
+  matchCount(): number {
+    return this.hasFilter ? this.state.matchedCount : this.indexer.getCommittedRows()
+  }
+
+  /** Map a display index to its source row index (identity when unfiltered). */
+  rowAt(displayIndex: number): number {
+    if (!this.hasFilter) return displayIndex
+    return this.state.matchedRows[displayIndex] ?? 0
   }
 
   setOperationId(operationId: string): void {
@@ -424,6 +455,10 @@ class FilterEngine {
       throw new Error('Filter cancelled')
     }
 
+    // The view only becomes "filtered" on success: a failed/cancelled
+    // scan must not replace the previous view (identity or last filter).
+    this.hasFilter = true
+
     return { matchedRows: matchedCount, totalRows }
   }
 
@@ -475,10 +510,17 @@ class FilterEngine {
 interface ExportState {
   token: string
   generation: number
+  /** Filtered snapshot; empty when the view is unfiltered (identity). */
   matchedRows: Uint32Array
+  hasFilter: boolean
   matchedCount: number
   currentIndex: number
   cancelled: boolean
+}
+
+/** Resolve an export's display index to a source row (identity-aware). */
+function exportRowAt(state: ExportState, displayIndex: number): number {
+  return state.hasFilter ? (state.matchedRows[displayIndex] ?? 0) : displayIndex
 }
 
 const exportStates = new Map<string, ExportState>()
@@ -719,6 +761,7 @@ async function handleInitUrl(request: InitUrlRequest): Promise<void> {
       totalRows: stats.totalRows,
       totalBytes: Number(stats.totalBytes),
       durationMs: Math.round(performance.now() - startedAt),
+      generation: currentGeneration,
     }
     self.postMessage(completeEvent)
 
@@ -769,9 +812,23 @@ async function handleIndex(request: IndexRequest): Promise<void> {
   indexer.setOperationId(request.operationId)
 
   try {
-    const { totalRows, totalBytes, invalidUtf8Rows } = await indexer.index()
+    const { totalRows, totalBytes, invalidUtf8Rows, durationMs } = await indexer.index()
 
     currentGeneration++
+
+    // The commit changes which rows exist: main-thread row caches are
+    // keyed by generation and must invalidate (R12/memory).
+    const event: IndexCompleteEvent = {
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'indexComplete',
+      operationId: request.operationId,
+      totalRows,
+      totalBytes,
+      durationMs,
+      generation: currentGeneration,
+    }
+    self.postMessage(event)
 
     const response = createSuccessResponse(request.requestId, {
       totalRows,
@@ -819,8 +876,9 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
     return
   }
 
-  const matchedRows = filterEngine.getMatchedRows()
-  const totalFiltered = filterEngine.getMatchedCount()
+  // Identity-aware mapping: unfiltered view (display i == row i) or the
+  // last completed filter's matched rows (R3 replace semantics).
+  const totalFiltered = filterEngine.matchCount()
 
   const start = request.start
   const count = request.count
@@ -829,26 +887,23 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
   const rows: RowData[] = []
 
   for (let i = start; i < end; i++) {
-    const matchedRowIndex = matchedRows[i] ?? 0
+    const matchedRowIndex = filterEngine.rowAt(i)
     const lineStart = indexer.getLineStart(matchedRowIndex)
     const lineEnd = indexer.getLineEnd(matchedRowIndex)
+    // Full row length comes from the index; only the PREVIEW prefix is
+    // read so a huge row (e.g. one 100 MB line) bounds both the read and
+    // the message (full detail is fetched separately via getLine).
     const length = lineEnd - lineStart + 1
+    const readLength = Math.min(length, PREVIEW_ROW_BYTES)
 
-    const lineBytes = await source!.readRange(lineStart, length)
-
-    let text: string
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(lineBytes)
-    } catch {
-      text = new TextDecoder('utf-8', { fatal: false }).decode(lineBytes)
-    }
+    const previewBytes = await source!.readRange(lineStart, readLength)
 
     rows.push({
       lineId: matchedRowIndex + 1,
       displayIndex: i,
-      text,
+      text: escapeForSingleLine(decodeRowBytes(previewBytes)),
       isEdited: false,
-      byteLength: lineBytes.length,
+      byteLength: length,
     })
   }
 
@@ -880,18 +935,13 @@ async function handleGetLine(request: GetLineRequest): Promise<void> {
   const lineEnd = (indexer.getLineEnd(lineIndex) ?? lineStart)
   const length = lineEnd - lineStart + 1
 
+  // Full, UNescaped text: the detail panel parses it as JSON, so control
+  // characters must survive (the list preview escapes, the detail does not).
   const lineBytes = await source!.readRange(lineStart, length)
-
-  let text: string
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(lineBytes)
-  } catch {
-    text = new TextDecoder('utf-8', { fatal: false }).decode(lineBytes)
-  }
 
   const response = createSuccessResponse(request.requestId, {
     lineId: request.lineId,
-    text,
+    text: decodeRowBytes(lineBytes),
     isEdited: false,
   })
   self.postMessage(response)
@@ -910,13 +960,19 @@ async function handleExportStart(request: ExportStartRequest): Promise<void> {
   }
 
   const token = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`
-  const matchedRows = filterEngine.getMatchedRows()
-  const matchedCount = filterEngine.getMatchedCount()
+  const matchedCount = filterEngine.matchCount()
+  const hasFilter = filterEngine.isFiltered()
+  // Only a FILTERED view copies its (bounded) snapshot; an identity view
+  // must never materialize a row array the size of the whole file.
+  const snapshot = hasFilter
+    ? filterEngine.getMatchedRows().slice(0, filterEngine.getMatchedCount())
+    : new Uint32Array(0)
 
   exportStates.set(token, {
     token,
     generation: request.generation,
-    matchedRows: matchedRows.slice(0, matchedCount),
+    matchedRows: snapshot,
+    hasFilter,
     matchedCount,
     currentIndex: 0,
     cancelled: false,
@@ -924,12 +980,14 @@ async function handleExportStart(request: ExportStartRequest): Promise<void> {
 
   let estimatedBytes = 0
   const indexerInstance = indexer!
-  for (let i = 0; i < Math.min(matchedCount, 100); i++) {
-    const lineStart = indexerInstance.getLineStart(matchedRows[i] ?? 0)
-    const lineEnd = indexerInstance.getLineEnd(matchedRows[i] ?? 0)
+  const sampleCount = Math.min(matchedCount, 100)
+  for (let i = 0; i < sampleCount; i++) {
+    const row = exportRowAt(exportStates.get(token)!, i)
+    const lineStart = indexerInstance.getLineStart(row)
+    const lineEnd = indexerInstance.getLineEnd(row)
     estimatedBytes += ((lineEnd ?? 0) - (lineStart ?? 0) + 2)
   }
-  estimatedBytes = Math.round(estimatedBytes * (matchedCount / Math.min(matchedCount, 100)))
+  estimatedBytes = sampleCount > 0 ? Math.round(estimatedBytes * (matchedCount / sampleCount)) : 0
 
   const response = createSuccessResponse(request.requestId, {
     token,
@@ -959,7 +1017,7 @@ async function handleExportNext(request: ExportNextRequest): Promise<void> {
 
   const indexerInstance = indexer!
   const sourceInstance = source!
-  const matchedRowIndex = state.matchedRows[state.currentIndex] ?? 0
+  const matchedRowIndex = exportRowAt(state, state.currentIndex)
   const lineStart = indexerInstance.getLineStart(matchedRowIndex) ?? 0
   const lineEnd = indexerInstance.getLineEnd(matchedRowIndex) ?? lineStart
   const length = (lineEnd ?? 0) - (lineStart ?? 0) + 1

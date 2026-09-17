@@ -394,6 +394,11 @@ export const ENGINE_DEFAULTS = {
   rowPreviewByteLimit: 500, // bytes shown in row list
   largeRowDetailThreshold: 1 * 1024 * 1024, // 1 MiB
   spoolPageSizeBytes: 256 * 1024, // 256 KiB pages for the in-memory URL fallback
+  // Main-thread row-window cache (TSK0021): a BYTE budget, not just an
+  // entry count — previews are small but unbounded in count. ~4 MiB of
+  // previews ≈ 8k typical rows (516 B each) ≈ 1.6k worst-case escaped rows.
+  rowCacheMaxBytes: 4 * 1024 * 1024,
+  rowCacheMaxEntries: 20000,
 } as const
 
 // ============================================================================
@@ -420,6 +425,42 @@ export const ENGINE_DEFAULTS = {
  *   lazily creates a fresh engine, so no resources leak across sources.
  *
  * References: PLAN.md 4.3 (guard R5, header, layout)
+ */
+
+// ============================================================================
+// ROW WINDOW AND CACHING (TSK0021)
+// ============================================================================
+/**
+ * Batched row-window retrieval and bounded LRU caching (TSK0021):
+ * - The worker is the single source of truth for the display->lineId
+ *   mapping. Unfiltered, it is the IDENTITY (display i == row i, lineId
+ *   i+1) — no match list the size of the file is ever materialized.
+ *   After a filter completes, display positions map through the filter's
+ *   matched-rows snapshot (R3 replace semantics); a failed/cancelled
+ *   filter never changes the view.
+ * - `getRows` returns list PREVIEWS: only the first rowPreviewByteLimit
+ *   (500 B) of each row is read and transferred, with C0/DEL control
+ *   characters escaped so the preview always renders on one line.
+ *   `byteLength` still reports the FULL row size. Full (unescaped) text
+ *   is fetched separately via `getLine` — the detail panel parses it as
+ *   JSON, so control characters must survive.
+ * - The main-thread row store (stores/rows.ts) coalesces every window
+ *   request (viewport + overscan) into ONE in-flight getRows RPC; a
+ *   scrolling virtualizer only widens the desired range. The cache is
+ *   keyed by (generation, lineId) and bounded by a BYTE budget plus an
+ *   entry cap (rowCacheMaxBytes/Entries) — never entry count alone (R12).
+ *   LRU eviction never removes rows inside the current desired window.
+ * - Generations: the worker's `indexComplete` event carries the post-
+ *   commit generation; getRows responses echo the generation they were
+ *   computed for. A response NEWER than the store's generation is fresh
+ *   (adopt + apply); one OLDER is stale and is NEVER applied (no
+ *   downgrade). Filter completion (filter store's generation) and index
+ *   commits invalidate the cache; a new source resets it via
+ *   fileStore.resetDerivedState().
+ * - Exports follow the same identity rule: only a filtered view copies
+ *   its bounded snapshot; the identity view resolves rows on the fly.
+ *
+ * References: PLAN.md 4.3 (row list, memory R12)
  */
 
 // ============================================================================

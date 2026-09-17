@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { useSelectionStore } from '~/stores/selection'
 import { useFilterStore } from '~/stores/filter'
+import { useRowStore } from '~/stores/rows'
 import type { JsonlEngine } from '~/engine/index'
 
 export interface FileMetadata {
@@ -49,10 +50,15 @@ export const useFileStore = defineStore('file', () => {
     loadError.value = error instanceof Error ? error.message : 'Failed to load source'
   }
 
-  /** A new source invalidates every derived view (selection + filter). */
+  /**
+   * A new source (or fatal) invalidates every derived view: selection,
+   * filter, and the row-window cache (its generation must follow the new
+   * worker's).
+   */
   function resetDerivedState(): void {
     useSelectionStore().resetSelection()
     useFilterStore().resetFilterState()
+    useRowStore().reset()
   }
 
   async function loadFile(file: File) {

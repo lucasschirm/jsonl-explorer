@@ -255,6 +255,12 @@ export interface IndexCompleteEvent {
   totalRows: number
   totalBytes: number
   durationMs: number
+  /**
+   * Worker generation after this commit (increments on index completion,
+   * filter, and edit). The main thread uses it to invalidate row caches:
+   * a commit changes which rows exist, so every cached window is stale.
+   */
+  generation: number
 }
 
 export interface IndexResponse extends BaseResponse {
@@ -339,8 +345,15 @@ export type Generation = number & { readonly __brand: unique symbol }
 export interface RowData {
   lineId: number // Stable source line ID (1-based)
   displayIndex: number // Current filtered position (0-based)
-  text: string // Row text (escaped for display)
+  /**
+   * Escaped, single-line PREVIEW of the row, capped at the worker's
+   * rowPreviewByteLimit bytes of the ORIGINAL row (control characters
+   * escaped to \uXXXX). It is NOT the full row: fetch full detail via
+   * getLine. Truncated multi-byte characters decode to U+FFFD.
+   */
+  text: string
   isEdited: boolean
+  /** Full byte length of the ORIGINAL row (not the preview). */
   byteLength: number
 }
 
