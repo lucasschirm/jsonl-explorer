@@ -90,7 +90,10 @@ export const useDetailStore = defineStore('detail', () => {
       }
       const cached = rowStore.rows.get(id)
       text.value = full.text
-      byteLength.value = cached?.byteLength ?? full.text.length
+      // Byte-exact: the window cache carries the row's byte length (the
+      // override's, when edited); otherwise measure the loaded text.
+      byteLength.value =
+        cached?.byteLength ?? new TextEncoder().encode(full.text).length
       if (byteLength.value > ENGINE_DEFAULTS.largeRowDetailThreshold) {
         needsConfirm.value = true // raw until the user confirms the tree
       } else if (parseJsonText(full.text).ok === false) {

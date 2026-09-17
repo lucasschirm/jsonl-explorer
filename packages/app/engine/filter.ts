@@ -90,6 +90,8 @@ interface ScanBuffer {
   count: number
   errors: number
   firstError: string | null
+  /** jq only: 1 where the row errored (applied to state on the swap). */
+  errorFlags: Uint8Array | null
 }
 
 interface FilterState {
@@ -102,6 +104,11 @@ interface FilterState {
   matchedCount: number
   operationId: string | null
   cancelled: boolean
+  /** Rows the scan skipped (jq row errors); exact per-row flags. */
+  errorCount: number
+  errorFlags: Uint8Array | null
+  /** One-line summary of the first row error (null when none). */
+  errorSummary: string | null
 }
 
 function decodeForFilter(bytes: Uint8Array): string {
@@ -131,6 +138,9 @@ export class FilterEngine {
     matchedCount: 0,
     operationId: null,
     cancelled: false,
+    errorCount: 0,
+    errorFlags: null,
+    errorSummary: null,
   }
   private hasFilter = false
   /** Bumped on every filter() start; in-flight scans observe the mismatch. */
@@ -188,6 +198,112 @@ export class FilterEngine {
   }
 
   /**
+   * Re-evaluate ONE row after an edit/reset (TSK0030). The caller has
+   * already stored (or removed) the override, so `rowText` returns the new
+   * effective text. With a filter active, the published match index and the
+   * per-row error state are updated in place (a single-row change — the
+   * full rescan is avoided); without one, membership is the identity view.
+   * Returns the row's new display index (null when it drops out of the
+   * view) plus the updated error accounting.
+   *
+   * A concurrent scan commit (indexComplete rerun) is detected via index
+   * identity: that scan already judged the row against the new text, so the
+   * in-place mutation is skipped — no torn index is ever written.
+   */
+  async applyEdit(
+    lineId: number,
+  ): Promise<{ filteredIndex: number | null; errorCount: number; errorSummary: string | null }> {
+    const rowIndex = lineId - 1
+    if (!Number.isInteger(rowIndex) || rowIndex < 0) {
+      throw new Error(`Invalid line ID: ${lineId}`)
+    }
+    if (!this.hasFilter) {
+      const inView = rowIndex < this.indexer.getCommittedRows()
+      return { filteredIndex: inView ? rowIndex : null, errorCount: 0, errorSummary: null }
+    }
+    // Capture the published index: if a scan commits while we await below
+    // (a reset reads the source), the swap already reflects this edit.
+    const capturedIndex = this.state.matchedRows
+    const capturedToken = this.scanToken
+    const effectiveText = await this.rowText(rowIndex)
+    if (
+      this.state.matchedRows !== capturedIndex ||
+      this.scanToken !== capturedToken ||
+      !this.hasFilter
+    ) {
+      return {
+        filteredIndex: this.positionOfLine(lineId),
+        errorCount: this.state.errorCount,
+        errorSummary: this.state.errorSummary,
+      }
+    }
+    let matches: boolean
+    let rowErrored = false
+    if (this.state.kind === 'text') {
+      matches = effectiveText.includes(this.state.query)
+    } else {
+      const verdict = await this.jq?.runVerdicts(this.state.jqProgram as string, [effectiveText], () => false)
+      if (verdict === undefined) {
+        matches = false // jq backend unavailable: never a match (worker guarantees presence)
+      } else if (verdict.errorRows[0]) {
+        matches = false
+        rowErrored = true
+        this.state.errorSummary ??= verdict.firstError ?? 'Row error'
+      } else {
+        matches = verdict.verdicts[0] === true
+      }
+      // A scan could have committed during the verdict await as well.
+      if (this.state.matchedRows !== capturedIndex || this.scanToken !== capturedToken) {
+        return {
+          filteredIndex: this.positionOfLine(lineId),
+          errorCount: this.state.errorCount,
+          errorSummary: this.state.errorSummary,
+        }
+      }
+    }
+    this.applyRowError(rowIndex, rowErrored)
+    const matchedCount = this.state.matchedCount
+    const pos = binarySearchRow(this.state.matchedRows, matchedCount, rowIndex)
+    const currentlyMatches =
+      pos < matchedCount && this.state.matchedRows[pos] === rowIndex
+    if (currentlyMatches && !matches) {
+      const rows = this.state.matchedRows
+      for (let i = pos; i < matchedCount - 1; i++) rows[i] = rows[i + 1] as number
+      this.state.matchedCount = matchedCount - 1
+      return { filteredIndex: null, errorCount: this.state.errorCount, errorSummary: this.state.errorSummary }
+    }
+    if (!currentlyMatches && matches) {
+      let rows = this.state.matchedRows
+      if (matchedCount >= rows.length) {
+        const grown = new Uint32Array(rows.length * 2 + 1024)
+        grown.set(rows)
+        this.state.matchedRows = grown
+        rows = grown
+      }
+      for (let i = matchedCount; i > pos; i--) rows[i] = rows[i - 1] as number
+      rows[pos] = rowIndex
+      this.state.matchedCount = matchedCount + 1
+      return { filteredIndex: pos, errorCount: this.state.errorCount, errorSummary: this.state.errorSummary }
+    }
+    return {
+      filteredIndex: currentlyMatches ? pos : null,
+      errorCount: this.state.errorCount,
+      errorSummary: this.state.errorSummary,
+    }
+  }
+
+  /** Update the per-row error flag and the running count for one row. */
+  private applyRowError(rowIndex: number, rowErrored: boolean): void {
+    const flags = this.state.errorFlags
+    if (flags === null || rowIndex >= flags.length) return // text kind / outside scan horizon
+    const wasError = flags[rowIndex] === 1
+    if (wasError === rowErrored) return
+    flags[rowIndex] = rowErrored ? 1 : 0
+    this.state.errorCount = Math.max(0, this.state.errorCount + (rowErrored ? 1 : -1))
+    if (this.state.errorCount === 0) this.state.errorSummary = null
+  }
+
+  /**
    * Drops the filter view: the identity mapping is restored and any
    * in-flight scan is aborted (its token no longer matches, so its
    * atomic swap is skipped and it surfaces as a cancel).
@@ -200,6 +316,9 @@ export class FilterEngine {
     this.state.jqProgram = null
     this.state.matchedRows = new Uint32Array(0)
     this.state.matchedCount = 0
+    this.state.errorCount = 0
+    this.state.errorFlags = null
+    this.state.errorSummary = null
     this.hasFilter = false
   }
 
@@ -242,6 +361,7 @@ export class FilterEngine {
       count: 0,
       errors: 0,
       firstError: null,
+      errorFlags: kind === 'jq' ? new Uint8Array(totalRows) : null,
     }
     if (kind === 'jq') {
       jqProgram = await this.compileJq(query)
@@ -255,6 +375,9 @@ export class FilterEngine {
     this.state.jqProgram = jqProgram
     this.state.matchedRows = buffer.rows
     this.state.matchedCount = buffer.count
+    this.state.errorCount = buffer.errors
+    this.state.errorFlags = buffer.errorFlags
+    this.state.errorSummary = buffer.firstError
     this.hasFilter = true
     return {
       matchedRows: buffer.count,
@@ -326,6 +449,7 @@ export class FilterEngine {
       }
       for (let k = 0; k < rows.length; k++) {
         if (result.verdicts[k] === true) this.addMatch(buffer, i + k)
+        if (result.errorRows[k] && buffer.errorFlags !== null) buffer.errorFlags[i + k] = 1
       }
       buffer.errors += result.errorCount
       if (result.firstError !== undefined && buffer.firstError === null) {

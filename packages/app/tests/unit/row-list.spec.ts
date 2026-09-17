@@ -26,8 +26,8 @@ interface PostedOp {
   generation?: number
 }
 
-function makeRow(displayIndex: number, lineId: number, text: string): RowData {
-  return { lineId, displayIndex, text, isEdited: false, byteLength: text.length }
+function makeRow(displayIndex: number, lineId: number, text: string, isEdited = false): RowData {
+  return { lineId, displayIndex, text, isEdited, byteLength: text.length }
 }
 
 describe('RowList (TSK0022)', () => {
@@ -125,6 +125,32 @@ describe('RowList (TSK0022)', () => {
     // The spacer is the full virtual height: count x fixed row height.
     const spacer = wrapper.find('[data-testid="row-list-scroll"] > div')
     expect(spacer.attributes('style')).toContain(`height: ${5 * ROW_HEIGHT}px`)
+  })
+
+  it('marks edited rows with a badge and unedited rows without one (TSK0030)', async () => {
+    await initSource()
+    emitIndexComplete(3, 1)
+    await nextTick()
+    await vi.waitFor(() => expect(getRowsOps().length).toBe(1))
+    answerLast(
+      [
+        makeRow(0, 1, '{"a":1}'),
+        makeRow(1, 2, '{"b":"EDITED"}', true),
+        makeRow(2, 3, '{"c":3}'),
+      ],
+      1,
+      3,
+    )
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-testid="row-placeholder"]').length).toBe(0)
+    })
+
+    const badges = wrapper.findAll('[data-testid="row-edited-badge"]')
+    expect(badges).toHaveLength(1)
+    const secondRow = wrapper.findAll('[data-testid="row-item"]')[1]!
+    expect(secondRow.text()).toContain('edited')
+    const firstRow = wrapper.findAll('[data-testid="row-item"]')[0]!
+    expect(firstRow.find('[data-testid="row-edited-badge"]').exists()).toBe(false)
   })
 
   it('shows placeholders while a window is in flight', async () => {

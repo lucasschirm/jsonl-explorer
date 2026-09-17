@@ -56,6 +56,8 @@ interface AutoWorkerMessage {
   requestId?: string
   file?: File
   name?: string
+  lineId?: number
+  text?: string
 }
 
 /**
@@ -106,7 +108,14 @@ export class AutoWorker extends FakeWorker {
                 ? { matchedRows: 10, totalRows: 10, generation: 1, partial: false }
                 : msg.type === 'getRows'
                 ? { rows: [], generation: 1, totalFiltered: 3 }
-                : msg.type === 'dispose'
+                : msg.type === 'setEdit'
+                  ? {
+                      lineId: msg.lineId ?? 1,
+                      isEdited: msg.text !== undefined,
+                      newGeneration: 2,
+                      filteredIndex: 0,
+                    }
+                  : msg.type === 'dispose'
                   ? { disposed: true }
                   : null
     this.emit({ ns: PROTOCOL_NAMESPACE, v: PROTOCOL_VERSION, requestId: msg.requestId, ok: true, value })

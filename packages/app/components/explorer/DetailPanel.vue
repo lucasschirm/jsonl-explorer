@@ -14,6 +14,7 @@
  */
 import { computed, ref } from 'vue'
 import { useDetailStore } from '~/stores/detail'
+import { useEditsStore } from '~/stores/edits'
 import { ENGINE_DEFAULTS } from '~/engine/config/adr'
 import { formatBytes, serializeFormatted, serializeCompact } from '~/utils/jsonTree'
 import JsonTree from '~/components/explorer/JsonTree.vue'
@@ -23,6 +24,7 @@ import { copyText } from '~/utils/clipboard'
 
 const detailStore = useDetailStore()
 const toastStore = useToastStore()
+const editsStore = useEditsStore()
 
 /** Raw view of the current filtered dataset (virtualized modal). */
 const rawOpen = ref(false)
@@ -119,6 +121,13 @@ function confirmTree(): void {
       <span class="text-xs text-base-content/50">
         <template v-if="detailStore.status === 'ready'">
           Line {{ detailStore.lineId }} · {{ formatBytes(detailStore.byteLength) }}
+          <span
+            v-if="editsStore.isEdited(detailStore.lineId)"
+            data-testid="detail-edited-badge"
+            class="badge badge-xs badge-outline badge-warning font-sans"
+          >
+            edited
+          </span>
         </template>
         <template v-else-if="detailStore.status === 'loading'">Loading…</template>
       </span>

@@ -432,7 +432,8 @@ describe('FilterEngine jq row-error summary + clear (TSK0028)', () => {
             return false
           }
         })
-        const errorCount = rows.length - verdicts.filter(Boolean).length
+        const errorRows = verdicts.map((v) => v === false)
+        const errorCount = errorRows.filter(Boolean).length
         let firstError: string | undefined
         for (const row of rows) {
           try {
@@ -442,7 +443,7 @@ describe('FilterEngine jq row-error summary + clear (TSK0028)', () => {
             break
           }
         }
-        return { verdicts, errorCount, firstError }
+        return { verdicts, errorRows, errorCount, firstError }
       },
     } satisfies JqRuntimeLike
   }
@@ -524,3 +525,168 @@ describe('FilterEngine jq row-error summary + clear (TSK0028)', () => {
     expect(engine.positionOfLine(1)).toBe(0)
   })
 })
+
+describe('FilterEngine.applyEdit single-row re-evaluation (TSK0030)', () => {
+  /** The LIVE match index (only [0, matchedCount) of the buffer is real). */
+  function liveIndex(engine: FilterEngine): number[] {
+    return Array.from(engine.getMatchedRows().slice(0, engine.matchCount()))
+  }
+
+  function makeJqEngine(
+    rows: string[],
+    opts: { edits?: Map<number, string>; readDelayMs?: number } = {},
+  ) {
+    const layout = makeLayout(rows)
+    const readRange = async (start: number, length: number) => {
+      if (opts.readDelayMs) await new Promise((r) => setTimeout(r, opts.readDelayMs))
+      return layout.bytes.slice(start, start + length)
+    }
+    const engine = new FilterEngine(layout.indexer, { readRange }, {
+      postEvent: () => {},
+      getEditOverride: (lineId) => opts.edits?.get(lineId) ?? null,
+      isIndexComplete: () => true,
+      jq: {
+        compile: async (query: string) => `prog:${query}`,
+        runVerdicts: async (_program: string, input: string[]) => {
+          const verdicts = input.map((row) => {
+            try {
+              JSON.parse(row)
+              return true
+            } catch {
+              return false
+            }
+          })
+          const errorRows = verdicts.map((v) => v === false)
+          const errorCount = errorRows.filter(Boolean).length
+          let firstError: string | undefined
+          if (errorCount > 0) firstError = 'Invalid JSON (row is not a JSON value)'
+          return { verdicts, errorRows, errorCount, firstError }
+        },
+      } satisfies JqRuntimeLike,
+    })
+    return { engine, layout }
+  }
+
+  it('text kind: insert, remove, keep, and no-op all land on the right display index', async () => {
+    // lineId: 1='x' 2='y' 3='x' 4='z' 5='x'; filter 'x' -> lines 1, 3, 5.
+    const rows = ['x', 'y', 'x', 'z', 'x']
+    const edits = new Map<number, string>()
+    const { engine } = makeEngine(rows, { edits })
+    await engine.filter('text', 'x')
+    expect(liveIndex(engine)).toEqual([0, 2, 4])
+
+    // No-op: line 4 ('z') edited to still not contain the query.
+    edits.set(4, 'no query here')
+    expect((await engine.applyEdit(4)).filteredIndex).toBeNull()
+    expect(liveIndex(engine)).toEqual([0, 2, 4])
+
+    // Insert: line 4 now matches -> display index 2 (between lines 3 and 5).
+    edits.set(4, 'x now')
+    expect((await engine.applyEdit(4)).filteredIndex).toBe(2)
+    expect(liveIndex(engine)).toEqual([0, 2, 3, 4])
+
+    // Keep: an already-matching row edited to still match keeps its slot.
+    edits.set(1, 'xx')
+    expect((await engine.applyEdit(1)).filteredIndex).toBe(0)
+    expect(liveIndex(engine)).toEqual([0, 2, 3, 4])
+
+    // Remove: line 1 loses the query -> later rows shift left, index null.
+    edits.set(1, 'y again')
+    expect((await engine.applyEdit(1)).filteredIndex).toBeNull()
+    expect(liveIndex(engine)).toEqual([2, 3, 4])
+
+    // Text kind never errors.
+    expect((await engine.applyEdit(2)).errorCount).toBe(0)
+  })
+
+  it('identity view: applyEdit reports the row index without any state', async () => {
+    const { engine } = makeEngine(['a', 'b'])
+    const res = await engine.applyEdit(2)
+    expect(res).toEqual({ filteredIndex: 1, errorCount: 0, errorSummary: null })
+    // A row beyond the committed set is out of the view.
+    expect((await engine.applyEdit(3)).filteredIndex).toBeNull()
+  })
+
+  it('jq kind: fixing a row error drops the count, breaking a match adds one', async () => {
+    const rows = ['{"n":1}', 'broken', '{"n":2}']
+    const edits = new Map<number, string>()
+    const { engine } = makeJqEngine(rows, { edits })
+    const scan = await engine.filter('jq', '.n')
+    expect(scan.matchedRows).toBe(2)
+    expect(scan.errorCount).toBe(1)
+
+    // Fix row 2 (the broken one): valid JSON -> matches, error cleared.
+    edits.set(2, '{"n":3}')
+    const fixed = await engine.applyEdit(2)
+    expect(fixed.filteredIndex).toBe(1)
+    expect(fixed.errorCount).toBe(0)
+    expect(fixed.errorSummary).toBeNull()
+    expect(liveIndex(engine)).toEqual([0, 1, 2])
+
+    // Break row 1: invalid JSON -> row error, out of the view.
+    edits.set(1, 'nope')
+    const broken = await engine.applyEdit(1)
+    expect(broken.filteredIndex).toBeNull()
+    expect(broken.errorCount).toBe(1)
+    expect(typeof broken.errorSummary).toBe('string')
+    expect(liveIndex(engine)).toEqual([1, 2])
+
+    // clear() resets the error accounting along with the view.
+    engine.clear()
+    expect(engine.matchCount()).toBe(3)
+  })
+
+  it('a scan that commits during the verdict await wins: no torn index', async () => {
+    const rows = ['{"t":"a"}', '{"t":"b"}', '{"t":"a"}', '{"t":"c"}']
+    const edits = new Map<number, string>()
+    let verdictDelayMs = 0
+    const layout = makeLayout(rows)
+    const readRange = async (start: number, length: number) => {
+      await new Promise((r) => setTimeout(r, 1))
+      return layout.bytes.slice(start, start + length)
+    }
+    const jq: JqRuntimeLike = {
+      compile: async (query: string) => `prog:${query}`,
+      runVerdicts: async (_program: string, input: string[]) => {
+        if (verdictDelayMs) await new Promise((r) => setTimeout(r, verdictDelayMs))
+        const verdicts = input.map((row) => {
+          try {
+            JSON.parse(row)
+            return true
+          } catch {
+            return false
+          }
+        })
+        return { verdicts, errorRows: verdicts.map((v) => v === false), errorCount: 0 }
+      },
+    }
+    const engine = new FilterEngine(layout.indexer, { readRange }, {
+      postEvent: () => {},
+      getEditOverride: (lineId) => edits.get(lineId) ?? null,
+      isIndexComplete: () => true,
+      jq,
+    })
+
+    // Pre-filter with fast verdicts (all rows are valid JSON -> match).
+    await engine.filter('jq', '.t')
+    expect(engine.matchCount()).toBe(4)
+    // Now verdicts are SLOW: applyEdit's single-row verdict will straddle
+    // the next scan's commit (the scan needs ~4 ms of reads).
+    verdictDelayMs = 40
+    const pending = engine.filter('text', 'b') // only row 1
+    await new Promise((r) => setTimeout(r, 2))
+    const applied = engine.applyEdit(3) // line 3 = row 2, no 'b'
+    const scan = await pending
+    expect(scan.matchedRows).toBe(1)
+    const res = await applied
+
+    // Whichever guard fired, the outcome is the NEW index (the fresh scan
+    // already judged row 2 against the source text) — never a mutation of
+    // the superseded one.
+    expect(res.filteredIndex).toBeNull()
+    expect(liveIndex(engine)).toEqual([1])
+    expect(engine.positionOfLine(2)).toBe(0)
+    expect(engine.positionOfLine(3)).toBeNull()
+  })
+})
+

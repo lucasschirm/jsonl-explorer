@@ -298,4 +298,67 @@ describe('filter store: clear + row-error summary (TSK0028)', () => {
     expect(filterStore.errorCount).toBe(1)
     expect(filterStore.errorSummary).toBe('invalid JSON near line 42')
   })
+
+  it('editComplete upgrades an active filter result (newer generation) and is ignored otherwise (TSK0030)', async () => {
+    const worker = new FakeWorker()
+    injectWorker(worker)
+    await openFile(worker)
+    const filterStore = useFilterStore()
+
+    // No active filter (identity view): the event has nothing to update.
+    worker.emit({
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'editComplete',
+      operationId: 'edit-1-1',
+      lineId: 1,
+      isEdited: true,
+      matchedRows: 10,
+      totalRows: 10,
+      generation: 1,
+      partial: false,
+    })
+    expect(filterStore.result).toBeNull()
+
+    // An active filter: the newer-generation edit result is adopted.
+    const pending = filterStore.runFilter('x', 'text')
+    answerLast(worker, { matchedRows: 4, totalRows: 10, generation: 2, partial: false })
+    await pending
+    expect(filterStore.matchedRows).toBe(4)
+
+    worker.emit({
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'editComplete',
+      operationId: 'edit-2-3',
+      lineId: 2,
+      isEdited: true,
+      matchedRows: 5,
+      totalRows: 10,
+      errorCount: 1,
+      errorSummary: 'Invalid JSON',
+      generation: 3,
+      partial: false,
+    })
+    expect(filterStore.generation).toBe(3)
+    expect(filterStore.matchedRows).toBe(5)
+    expect(filterStore.errorCount).toBe(1)
+    expect(filterStore.errorSummary).toBe('Invalid JSON')
+
+    // Stale (older-generation) events are dropped.
+    worker.emit({
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'editComplete',
+      operationId: 'edit-1-1',
+      lineId: 1,
+      isEdited: false,
+      matchedRows: 4,
+      totalRows: 10,
+      generation: 2,
+      partial: false,
+    })
+    expect(filterStore.generation).toBe(3)
+    expect(filterStore.matchedRows).toBe(5)
+  })
 })

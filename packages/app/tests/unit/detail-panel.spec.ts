@@ -5,11 +5,13 @@
  * presentation-only controls (no setEdit ever).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { useJsonlEngine, resetJsonlEngineForTests } from '~/composables/useJsonlEngine'
 import { useSelectionStore } from '~/stores/selection'
 import { useDetailStore } from '~/stores/detail'
+import { useEditsStore } from '~/stores/edits'
 import { useToastStore } from '~/stores/toasts'
 import DetailPanel from '~/components/explorer/DetailPanel.vue'
 import { FakeWorker, success, failure } from '../helpers/fakeWorker'
@@ -94,6 +96,33 @@ describe('DetailPanel (TSK0024)', () => {
     // Collapsing works from the panel (independent node state).
     await tree.find('[data-testid="json-toggle-n-1"]').trigger('click')
     expect(tree.find('[data-testid="json-count-n-1"]').text()).toContain('2 items')
+  })
+
+  it('shows the edited badge while the active row carries an override (TSK0030)', async () => {
+    await initSource()
+    await selectAndAnswer('{"greeting":"hi"}')
+    expect(wrapper.find('[data-testid="detail-edited-badge"]').exists()).toBe(false)
+
+    const editsStore = useEditsStore()
+    const answerSetEdit = (isEdited: boolean) =>
+      vi.waitFor(async () => {
+        const ops = worker.posted.filter((m) => (m as PostedOp).type === 'setEdit') as PostedOp[]
+        const op = ops.at(-1)
+        if (!op?.requestId) throw new Error('setEdit not posted yet')
+        worker.emit(success(op.requestId, { lineId: 1, isEdited, newGeneration: 2 }))
+      })
+
+    const pendingSet = editsStore.setEdit(1, '{"greeting":"edited"}')
+    await answerSetEdit(true)
+    await pendingSet
+    await nextTick()
+    expect(wrapper.find('[data-testid="detail-edited-badge"]').exists()).toBe(true)
+
+    const pendingReset = editsStore.resetEdit(1)
+    await answerSetEdit(false)
+    await pendingReset
+    await nextTick()
+    expect(wrapper.find('[data-testid="detail-edited-badge"]').exists()).toBe(false)
   })
 
   it('shows invalid JSON as raw text with an error banner', async () => {

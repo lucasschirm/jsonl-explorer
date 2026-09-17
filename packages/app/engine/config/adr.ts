@@ -434,6 +434,11 @@ export const ENGINE_DEFAULTS = {
   // previews ≈ 8k typical rows (516 B each) ≈ 1.6k worst-case escaped rows.
   rowCacheMaxBytes: 4 * 1024 * 1024,
   rowCacheMaxEntries: 20000,
+  // Single-override edit budget (TSK0030): an override replaces a WHOLE
+  // row, so one that exceeds the large-row threshold (1 MiB) is "unusually
+  // large" by the same standard. The worker rejects over-budget edits with
+  // EDIT_TOO_LARGE; the main-thread store warns before sending one.
+  editMaxBytes: 1 * 1024 * 1024,
 } as const
 
 // ============================================================================

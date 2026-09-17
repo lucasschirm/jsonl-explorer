@@ -327,6 +327,28 @@ export interface FilterCompleteEvent {
   partial: boolean
 }
 
+/**
+ * Emitted after a setEdit/reset has been applied and re-evaluated against
+ * the active filter (TSK0030). Carries the NEW generation so main-thread
+ * views (row caches, filter counts, selection) converge on it. `matchedRows`
+ * is the current view size: matched rows when a filter is active, the
+ * committed row total otherwise.
+ */
+export interface EditCompleteEvent {
+  ns: typeof PROTOCOL_NAMESPACE
+  v: typeof PROTOCOL_VERSION
+  operationId: string
+  type: 'editComplete'
+  lineId: number
+  isEdited: boolean
+  matchedRows: number
+  totalRows: number
+  errorCount?: number
+  errorSummary?: string
+  generation: number
+  partial: boolean
+}
+
 export interface FilterResponse extends BaseResponse {
   ok: true
   value: FilterResult
@@ -573,6 +595,7 @@ export type EngineEvent =
   | IndexCompleteEvent
   | FilterProgressEvent
   | FilterCompleteEvent
+  | EditCompleteEvent
   | UrlProgressEvent
 
 export type WorkerEvent = EngineEvent | UrlFallbackConfirmRequest

@@ -264,6 +264,14 @@ watch(
             <span class="truncate text-base-content/90" :data-line-id="rowFor(item.index)!.lineId">
               {{ rowFor(item.index)!.text }}
             </span>
+            <!-- TSK0030: the row text is a local edit override, not the source. -->
+            <span
+              v-if="rowFor(item.index)!.isEdited"
+              data-testid="row-edited-badge"
+              class="badge badge-xs badge-outline badge-warning shrink-0 font-sans"
+            >
+              edited
+            </span>
           </template>
         </div>
       </div>

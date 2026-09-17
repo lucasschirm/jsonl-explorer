@@ -16,6 +16,7 @@ import type {
   IndexCompleteEvent,
   FilterProgressEvent,
   FilterCompleteEvent,
+  EditCompleteEvent,
   InitFileRequest,
   InitUrlRequest,
   InitMemoryRequest,
@@ -340,6 +341,24 @@ interface ExportState {
 /** Resolve an export's display index to a source row (identity-aware). */
 function exportRowAt(state: ExportState, displayIndex: number): number {
   return state.hasFilter ? (state.matchedRows[displayIndex] ?? 0) : displayIndex
+}
+
+/**
+ * Exact export bytes for one row (TSK0030): an accepted override replaces
+ * the source bytes (it is newline-free by construction — CR/LF edits are
+ * rejected — so exactly one row in, exactly one row out); otherwise the
+ * source bytes. The result always ends with exactly one `\n`.
+ */
+async function exportLineText(rowIndex: number): Promise<Uint8Array> {
+  const override = editOverrides.get(rowIndex + 1)
+  if (override !== undefined) {
+    return new TextEncoder().encode(override + '\n')
+  }
+  const lineStart = indexer!.getLineStart(rowIndex) ?? 0
+  const lineEnd = indexer!.getLineEnd(rowIndex) ?? lineStart
+  const lineBytes = await source!.readRange(lineStart, (lineEnd ?? 0) - lineStart + 1)
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(lineBytes)
+  return new TextEncoder().encode(text.endsWith('\n') ? text : text + '\n')
 }
 
 const exportStates = new Map<string, ExportState>()
@@ -828,6 +847,19 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
 
   for (let i = start; i < end; i++) {
     const matchedRowIndex = filterEngine.rowAt(i)
+    const lineId = matchedRowIndex + 1
+    const override = editOverrides.get(lineId)
+    if (override !== undefined) {
+      // Edited row: the PREVIEW is the override (never the source bytes).
+      rows.push({
+        lineId,
+        displayIndex: i,
+        text: escapeForSingleLine(previewOfOverride(override)),
+        isEdited: true,
+        byteLength: byteLengthOf(override) + 1,
+      })
+      continue
+    }
     const lineStart = indexer.getLineStart(matchedRowIndex)
     const lineEnd = indexer.getLineEnd(matchedRowIndex)
     // Full row length comes from the index; only the PREVIEW prefix is
@@ -839,7 +871,7 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
     const previewBytes = await source!.readRange(lineStart, readLength)
 
     rows.push({
-      lineId: matchedRowIndex + 1,
+      lineId,
       displayIndex: i,
       text: escapeForSingleLine(decodeRowBytes(previewBytes)),
       isEdited: false,
@@ -911,17 +943,101 @@ async function handleGetLine(request: GetLineRequest): Promise<void> {
   // characters must survive (the list preview escapes, the detail does not).
   const lineBytes = await source!.readRange(lineStart, length)
 
+  const override = editOverrides.get(request.lineId)
   const response = createSuccessResponse(request.requestId, {
     lineId: request.lineId,
-    text: decodeRowBytes(lineBytes),
-    isEdited: false,
+    // Edited rows return the override text (the source bytes are untouched
+    // on disk; the override IS the row's content for every consumer).
+    text: override ?? decodeRowBytes(lineBytes),
+    isEdited: override !== undefined,
   })
   self.postMessage(response)
 }
 
+/** UTF-8 byte length of an override (mirrors the on-disk row length - 1). */
+function byteLengthOf(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
+/**
+ * Byte-accurate preview of an override: the first PREVIEW_ROW_BYTES UTF-8
+ * bytes (a multi-codepoint character is never split), control characters
+ * escaped exactly like a source preview.
+ */
+function previewOfOverride(override: string): string {
+  const bytes = new TextEncoder().encode(override)
+  if (bytes.length <= PREVIEW_ROW_BYTES) return override
+  return decodeRowBytes(bytes.slice(0, PREVIEW_ROW_BYTES))
+}
+
 async function handleSetEdit(request: SetEditRequest): Promise<void> {
-  const response = createErrorResponse(request.requestId, 'EDIT_FAILED', 'Edit not implemented in worker yet')
+  if (!filterEngine || !indexer || !source) {
+    const response = createErrorResponse(request.requestId, 'SOURCE_NOT_INITIALIZED', 'Source not initialized')
+    self.postMessage(response)
+    return
+  }
+  const engine = filterEngine
+  const totalRows = indexer.getCommittedRows()
+  const lineId = request.lineId
+  if (!Number.isInteger(lineId) || lineId < 1 || lineId > totalRows) {
+    const response = createErrorResponse(request.requestId, 'INVALID_LINE_ID', `Line ID ${lineId} out of range (1..${totalRows})`)
+    self.postMessage(response)
+    return
+  }
+  const text = request.text
+  if (text !== undefined) {
+    // One source row stays one output row: raw newlines are rejected
+    // (PLAN, TSK0030). Both CR and LF, so CRLF never sneaks in half-wise.
+    if (text.includes('\r') || text.includes('\n')) {
+      const response = createErrorResponse(request.requestId, 'EDIT_CRLF_NOT_ALLOWED', 'An edit must remain a single line (no CR or LF).')
+      self.postMessage(response)
+      return
+    }
+    if (byteLengthOf(text) > ENGINE_DEFAULTS.editMaxBytes) {
+      const response = createErrorResponse(request.requestId, 'EDIT_TOO_LARGE', `Edit exceeds the ${ENGINE_DEFAULTS.editMaxBytes}-byte budget.`)
+      self.postMessage(response)
+      return
+    }
+  }
+  // The override map is authoritative: update it FIRST so any concurrent
+  // scan (and the re-evaluation below) reads the new effective text.
+  if (text !== undefined) editOverrides.set(lineId, text)
+  else editOverrides.delete(lineId)
+  const applied = await engine.applyEdit(lineId)
+  if (filterEngine !== engine) {
+    // The source was replaced mid-edit: the update landed on a dead index
+    // (and a cleared override map). Surface a typed failure; the UI retries.
+    const response = createErrorResponse(request.requestId, 'EDIT_FAILED', 'The source changed while applying the edit.')
+    self.postMessage(response)
+    return
+  }
+  currentGeneration += 1
+  const isEdited = editOverrides.has(lineId)
+  const response = createSuccessResponse(request.requestId, {
+    lineId,
+    isEdited,
+    newGeneration: currentGeneration,
+    filteredIndex: applied.filteredIndex ?? undefined,
+  })
   self.postMessage(response)
+  // Converge every main-thread view on the new generation: row caches
+  // re-fetch, filter counts/selection re-derive (see EditCompleteEvent).
+  const event: EditCompleteEvent = {
+    ns: PROTOCOL_NAMESPACE,
+    v: PROTOCOL_VERSION,
+    // setEdit carries no operationId: synthesize a stable per-edit id.
+    operationId: `edit-${lineId}-${currentGeneration}`,
+    type: 'editComplete',
+    lineId,
+    isEdited,
+    matchedRows: engine.matchCount(),
+    totalRows: indexer.getCommittedRows(),
+    errorCount: applied.errorCount,
+    errorSummary: applied.errorSummary ?? undefined,
+    generation: currentGeneration,
+    partial: !indexComplete,
+  }
+  self.postMessage(event)
 }
 
 async function handleExportStart(request: ExportStartRequest): Promise<void> {
@@ -955,6 +1071,11 @@ async function handleExportStart(request: ExportStartRequest): Promise<void> {
   const sampleCount = Math.min(matchedCount, 100)
   for (let i = 0; i < sampleCount; i++) {
     const row = exportRowAt(exportStates.get(token)!, i)
+    const override = editOverrides.get(row + 1)
+    if (override !== undefined) {
+      estimatedBytes += byteLengthOf(override) + 1
+      continue
+    }
     const lineStart = indexerInstance.getLineStart(row)
     const lineEnd = indexerInstance.getLineEnd(row)
     estimatedBytes += ((lineEnd ?? 0) - (lineStart ?? 0) + 2)
@@ -987,18 +1108,8 @@ async function handleExportNext(request: ExportNextRequest): Promise<void> {
     return
   }
 
-  const indexerInstance = indexer!
-  const sourceInstance = source!
   const matchedRowIndex = exportRowAt(state, state.currentIndex)
-  const lineStart = indexerInstance.getLineStart(matchedRowIndex) ?? 0
-  const lineEnd = indexerInstance.getLineEnd(matchedRowIndex) ?? lineStart
-  const length = (lineEnd ?? 0) - (lineStart ?? 0) + 1
-
-  const lineBytes = await sourceInstance.readRange(lineStart, length)
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(lineBytes)
-
-  const exportText = text.endsWith('\n') ? text : text + '\n'
-  const exportBytes = new TextEncoder().encode(exportText)
+  const exportBytes = await exportLineText(matchedRowIndex)
 
   state.currentIndex++
 

@@ -267,8 +267,11 @@ export const useRowStore = defineStore('rows', () => {
   )
 
   // Index commits bump the worker generation (new rows exist): invalidate
-  // and adopt the committed row count from the event. Re-subscribe whenever
-  // the engine instance changes (new worker).
+  // and adopt the committed row count. Edit commits do the same (TSK0030):
+  // the row TEXT changed even when membership did not, so cached previews
+  // are stale; the event's matchedRows is the current view size (identity
+  // or filtered). Re-subscribe whenever the engine instance changes
+  // (new worker).
   watch(
     () => engineApi.engine.value,
     (engine) => {
@@ -279,6 +282,9 @@ export const useRowStore = defineStore('rows', () => {
         if (event.type === 'indexComplete') {
           adoptGeneration(event.generation)
           totalFiltered.value = event.totalRows
+        } else if (event.type === 'editComplete') {
+          adoptGeneration(event.generation)
+          totalFiltered.value = event.matchedRows
         }
       })
     },

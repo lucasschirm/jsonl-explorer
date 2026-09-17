@@ -62,10 +62,13 @@ export const JQ_BATCH_MAX_BYTES = 256 * 1024
 /**
  * One verdict per input row: true = the row matches (at least one output
  * that is neither false nor null), false = no match or the row is
- * invalid/errored (counted in errorCount).
+ * invalid/errored (counted in errorCount). `errorRows` flags the exact
+ * rows that errored (pre-validation failures and isolated runtime errors),
+ * letting callers keep per-row error state (edit re-evaluation, TSK0030).
  */
 export interface JqVerdicts {
   verdicts: boolean[]
+  errorRows: boolean[]
   errorCount: number
   firstError?: string
 }
@@ -161,6 +164,7 @@ export class JqRuntime implements JqRuntimeLike {
     isAborted: () => boolean,
   ): Promise<JqVerdicts> {
     const verdicts = new Array<boolean>(rows.length).fill(false)
+    const errorRows = new Array<boolean>(rows.length).fill(false)
     let errorCount = 0
     let firstError: string | undefined
     // Pre-validation: blank or unparseable rows are counted here and NEVER
@@ -171,6 +175,7 @@ export class JqRuntime implements JqRuntimeLike {
       const text = rows[k]
       if (text === undefined || text.trim() === '') {
         errorCount++
+        errorRows[k] = true
         firstError ??= 'Invalid JSON (empty row)'
         continue
       }
@@ -178,6 +183,7 @@ export class JqRuntime implements JqRuntimeLike {
         JSON.parse(text)
       } catch {
         errorCount++
+        errorRows[k] = true
         firstError ??= 'Invalid JSON (row is not a JSON value)'
         continue
       }
@@ -207,11 +213,17 @@ export class JqRuntime implements JqRuntimeLike {
           if (row === undefined) continue
           verdicts[row.index] = isolated.verdicts[k] === true
         }
+        for (let k = 0; k < isolated.errorRows.length; k++) {
+          if (isolated.errorRows[k]) {
+            const row = batch[k]
+            if (row !== undefined) errorRows[row.index] = true
+          }
+        }
         errorCount += isolated.errorCount
         firstError ??= isolated.firstError
       }
     }
-    return { verdicts, errorCount, firstError }
+    return { verdicts, errorRows, errorCount, firstError }
   }
 
   /**
@@ -252,6 +264,7 @@ export class JqRuntime implements JqRuntimeLike {
     isAborted: () => boolean,
   ): JqVerdicts {
     const verdicts = new Array<boolean>(chunk.length).fill(false)
+    const errorRows = new Array<boolean>(chunk.length).fill(false)
     let errorCount = 0
     let firstError: string | undefined
     for (let k = 0; k < chunk.length; k++) {
@@ -264,10 +277,11 @@ export class JqRuntime implements JqRuntimeLike {
       } catch (error) {
         if (error instanceof FilterCancelledError) throw error
         errorCount++
+        errorRows[k] = true
         firstError ??= jqErrorText(error)
       }
     }
-    return { verdicts, errorCount, firstError }
+    return { verdicts, errorRows, errorCount, firstError }
   }
 }
 

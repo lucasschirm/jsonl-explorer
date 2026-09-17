@@ -55,10 +55,13 @@ export const useFilterStore = defineStore('filter', () => {
 
   // Completion reruns have no RPC in flight: the worker emits
   // filterComplete after rerunning the latest query at index completion.
-  // Adopt only newer generations (generation is per-source; resetFilterState
-  // clears result on source replacement, so no cross-source comparison).
+  // Edit re-evaluations (TSK0030) arrive as editComplete with the same
+  // shape. Adopt only NEWER generations (generation is per-source;
+  // resetFilterState clears result on source replacement, so there is no
+  // cross-source comparison) and only while a filter view is active.
   const unsubscribeComplete = engineApi.getEngine().onProgress((event) => {
-    if (event.type !== 'filterComplete') return
+    if (event.type !== 'filterComplete' && event.type !== 'editComplete') return
+    if (event.type === 'editComplete' && result.value === null) return // identity view: nothing to update
     const current = result.value?.generation ?? 0
     if (event.generation <= current) return
     result.value = {

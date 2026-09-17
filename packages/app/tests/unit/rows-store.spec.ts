@@ -325,6 +325,34 @@ describe('row window store (TSK0021)', () => {
     expect(rowStore.totalFiltered).toBe(99)
   })
 
+  it('an edit commit invalidates the window cache even in the identity view (TSK0030)', async () => {
+    await initSource()
+    rowStore.ensureWindow(0, 2)
+    await waitGetRows(1)
+    await answerWindows(0)
+    await settle()
+    expect(rowStore.rowCount).toBe(3)
+
+    // The edit changed row TEXT: the cached previews are stale even though
+    // the view size (identity) did not change.
+    worker.emit({
+      ns: 'jsonl-explorer',
+      v: 1,
+      type: 'editComplete',
+      operationId: 'edit-1-2',
+      lineId: 1,
+      isEdited: true,
+      matchedRows: 3,
+      totalRows: 3,
+      generation: 2,
+      partial: false,
+    })
+    await settle()
+    expect(rowStore.generation).toBe(2)
+    expect(rowStore.rowCount).toBe(0) // cache dropped
+    expect(rowStore.totalFiltered).toBe(3) // identity view size unchanged
+  })
+
   it('reset() clears everything (new source)', async () => {
     await initSource()
     rowStore.ensureWindow(0, 1)

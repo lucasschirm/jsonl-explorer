@@ -4,6 +4,7 @@ import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { useSelectionStore } from '~/stores/selection'
 import { useFilterStore } from '~/stores/filter'
 import { useRowStore } from '~/stores/rows'
+import { useEditsStore } from '~/stores/edits'
 import type { JsonlEngine } from '~/engine/index'
 
 export interface FileMetadata {
@@ -52,12 +53,13 @@ export const useFileStore = defineStore('file', () => {
 
   /**
    * A new source (or fatal) invalidates every derived view: selection,
-   * filter, and the row-window cache (its generation must follow the new
-   * worker's).
+   * filter, edits (line ids no longer refer to rows), and the row-window
+   * cache (its generation must follow the new worker's).
    */
   function resetDerivedState(): void {
     useSelectionStore().resetSelection()
     useFilterStore().resetFilterState()
+    useEditsStore().resetEdits()
     useRowStore().reset()
   }
 
