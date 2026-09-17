@@ -99,7 +99,7 @@ describe('filter performance baselines (TSK0029, non-gating)', () => {
     post({ requestId: 'r-text', operationId: 'op-text', type: 'filter', kind: 'text', query: '"status":"error"' })
     const res = await waitForResponse('r-text')
     record('text: "status":"error"', performance.now() - t0, res, Math.floor(ROWS * ERROR_RATE))
-  })
+  }, 30_000) // non-gating baseline: generous budget under CI host load
 
   it('jq filter baseline (.status == "error")', async () => {
     // Warm up: load the wasm singleton + compile a trivial program so the
@@ -112,7 +112,7 @@ describe('filter performance baselines (TSK0029, non-gating)', () => {
     post({ requestId: 'r-jq', operationId: 'op-jq', type: 'filter', kind: 'jq', query: '.status == "error"' })
     const res = await waitForResponse('r-jq')
     record('jq: .status == "error"', performance.now() - t0, res, Math.floor(ROWS * ERROR_RATE))
-  })
+  }, 30_000) // non-gating baseline: generous budget under CI host load
 
   it('prints the baseline table (record in docs/perf-baselines.md)', () => {
     const table = results.map((r) => ({

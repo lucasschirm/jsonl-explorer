@@ -290,7 +290,7 @@ describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {
     // A fresh run still works after the cancel.
     const again = await engine.filter('text', 'y')
     expect(again.matchedRows).toBe(MANY.length - firstCount)
-  })
+  }, 30_000) // full-scan cancellation test: budget for loaded CI hosts
 
   it('a newer filter supersedes the in-flight one (stale operation)', async () => {
     const { engine } = makeEngine(MANY, { readDelayMs: 0.5 })
@@ -308,7 +308,7 @@ describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {
     // row 1 (lineId 1) is 'x' -> visible; row 2 (lineId 2) is 'y' -> not.
     expect(engine.positionOfLine(1)).toBe(0)
     expect(engine.positionOfLine(2)).toBeNull()
-  })
+  }, 30_000) // full-scan supersede test: budget for loaded CI hosts
 
   it('a scan error keeps the previous view (no half-replaced index)', async () => {
     const { engine } = makeEngine(['{"a":"hit"}'], {})

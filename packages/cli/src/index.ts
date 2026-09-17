@@ -14,6 +14,10 @@
  * - duplicate options: the LAST occurrence wins (standard CLI convention);
  * - `--` ends option parsing: everything after it is positional, so files
  *   whose names start with `-` can be passed as `jsonlex -- -weird.jsonl`.
+ *
+ * Capability hygiene (TSK0043): the capability is a read credential. It is
+ * printed ONLY where intentional — the `Opening:` line (default) or both
+ * URLs (`--no-open`, where the user needs them). Routine lines redact it.
  */
 
 import { parseArgs } from 'node:util'
@@ -32,6 +36,7 @@ export interface CliOptions {
   host: string
   open: boolean
   local: boolean
+  insecureLocalNetwork: boolean
 }
 
 /** Typed user-facing argument error (rendered as a one-line actionable error). */
@@ -49,6 +54,10 @@ Options:
   -h, --host <h>      Host to bind (default: 127.0.0.1)
   --no-open           Don't open browser automatically
   --local             Serve bundled static site locally (same-origin)
+  --insecure-local-network
+                      Acknowledge LAN exposure for a non-loopback --host
+                      (requires --local; the capability URL still guards the
+                      file, but other devices on your network can reach it)
   --help              Show this help
   --version           Show version
 
@@ -67,6 +76,7 @@ const parseOptions = {
   host: { type: 'string' as const, short: 'h' },
   'no-open': { type: 'boolean' as const },
   local: { type: 'boolean' as const },
+  'insecure-local-network': { type: 'boolean' as const },
   help: { type: 'boolean' as const },
   version: { type: 'boolean' as const },
 }
@@ -99,6 +109,7 @@ interface ParsedValues {
   host?: string
   'no-open'?: boolean
   local?: boolean
+  'insecure-local-network'?: boolean
   help?: boolean
   version?: boolean
 }
@@ -138,8 +149,23 @@ export function parseCliArgs(
   }
 
   const host = values.host ?? '127.0.0.1'
-  if (host !== '127.0.0.1' && host !== 'localhost' && !values.local) {
-    throw new CliArgumentError('Non-loopback host requires the --local flag (security)')
+  const loopback = host === '127.0.0.1' || host === 'localhost'
+  if (!loopback) {
+    // Two independent gates (TSK0043): the site must come from the same
+    // server (same-origin bootstrap), AND the user must acknowledge that
+    // their network can now reach the server (and, with the capability
+    // URL, the file).
+    if (!values.local) {
+      throw new CliArgumentError(
+        'Non-loopback host requires --local (the site must be served from the same server)',
+      )
+    }
+    if (!values['insecure-local-network']) {
+      throw new CliArgumentError(
+        'Non-loopback host exposes the server to your network. ' +
+          'Acknowledge this risk with --insecure-local-network.',
+      )
+    }
   }
 
   return {
@@ -149,6 +175,7 @@ export function parseCliArgs(
       host,
       open: !values['no-open'],
       local: values.local === true,
+      insecureLocalNetwork: values['insecure-local-network'] === true,
     },
     showHelp: false,
     showVersion: false,
@@ -156,7 +183,7 @@ export function parseCliArgs(
 }
 
 function stubOptions(): CliOptions {
-  return { file: '', port: 0, host: '127.0.0.1', open: true, local: false }
+  return { file: '', port: 0, host: '127.0.0.1', open: true, local: false, insecureLocalNetwork: false }
 }
 
 export function printHelp(): void {
@@ -194,49 +221,70 @@ async function main(): Promise<void> {
   const options = parsed.options
   const capability = generateCapability()
 
+  let server: Awaited<ReturnType<typeof createServer>>
   try {
-    const server = await createServer({
+    server = await createServer({
       file: options.file,
       port: options.port,
       host: options.host,
       capability,
       local: options.local,
     })
-
-    const address = server.server.address()
-    if (!address || typeof address === 'string') {
-      throw new Error('Failed to get server address')
+  } catch (error) {
+    // Actionable, specific messages for the common failure modes.
+    if (error instanceof Error && (error as { code?: string }).code === 'EADDRINUSE') {
+      console.error(`Error: Port ${options.port} is already in use. Choose another with --port.`)
+    } else {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
     }
+    process.exit(1)
+    return
+  }
 
-    const baseUrl = `http://${address.address === '::' ? '127.0.0.1' : address.address}:${address.port}`
-    const fileUrl = `${baseUrl}/${capability}/file.jsonl`
-    const explorerUrl = options.local
-      ? `${baseUrl}/?url=${encodeURIComponent(fileUrl)}`
-      : `https://jsonlexplorer.lucasschirm.com/?url=${encodeURIComponent(fileUrl)}`
+  const address = server.server.address()
+  if (!address || typeof address === 'string') {
+    console.error('Error: Failed to determine the server address')
+    process.exit(1)
+    return
+  }
 
-    console.log(`Server running at ${baseUrl}`)
+  const baseUrl = `http://${address.address === '::' ? '127.0.0.1' : address.address}:${address.port}`
+  const fileUrl = `${baseUrl}/${capability}/file.jsonl`
+  const explorerUrl = options.local
+    ? `${baseUrl}/?url=${encodeURIComponent(fileUrl)}`
+    : `https://jsonlexplorer.lucasschirm.com/?url=${encodeURIComponent(fileUrl)}`
+
+  console.log(`Server running at ${baseUrl}`)
+  if (options.open) {
+    // Capability hygiene: routine lines redact; the Opening line is the
+    // intentional print (it launches the browser).
     console.log(`File served at ${fileUrl.replace(capability, '[capability]')}`)
-    console.log(`Opening: ${explorerUrl.replace(capability, '[capability]')}`)
-
-    if (options.open) {
+    console.log(`Opening: ${explorerUrl}`)
+    try {
       const { default: open } = await import('open')
       await open(explorerUrl)
+    } catch (error) {
+      // No browser (headless CI, stripped environment): the server keeps
+      // running — the user still has the URL above.
+      console.warn(`Warning: Could not open a browser automatically (${error instanceof Error ? error.message : String(error)}).`)
     }
-
-    const shutdown = async (signal: string): Promise<void> => {
-      console.log(`\n${signal} received, shutting down...`)
-      await server.close()
-      process.exit(0)
-    }
-
-    process.on('SIGINT', () => void shutdown('SIGINT'))
-    process.on('SIGTERM', () => void shutdown('SIGTERM'))
-
-    await new Promise(() => {})
-  } catch (error) {
-    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
-    process.exit(1)
+  } else {
+    // --no-open: the user needs the URLs — both are intentional prints.
+    console.log(`File served at ${fileUrl}`)
+    console.log(`Explorer URL: ${explorerUrl}`)
   }
+
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`\n${signal} received, shutting down...`)
+    server.server.closeAllConnections?.()
+    await server.close()
+    process.exit(0)
+  }
+
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+
+  await new Promise(() => {})
 }
 
 // Run main() only when executed as the CLI entry (not when imported by

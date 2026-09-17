@@ -100,13 +100,18 @@ describe('parseCliArgs — port and host', () => {
   })
 
   it('rejects a non-loopback host without --local', () => {
-    expectCliError([file, '--host', '0.0.0.0'], 'Non-loopback host requires the --local flag')
+    expectCliError([file, '--host', '0.0.0.0'], 'Non-loopback host requires --local')
   })
 
-  it('accepts a non-loopback host with --local', () => {
-    const { options } = parseCliArgs([file, '--host', '0.0.0.0', '--local'])
+  it('rejects a non-loopback host without explicit risk acknowledgement', () => {
+    expectCliError([file, '--host', '0.0.0.0', '--local'], 'Acknowledge this risk with --insecure-local-network')
+  })
+
+  it('accepts a non-loopback host with --local AND the acknowledgement', () => {
+    const { options } = parseCliArgs([file, '--host', '0.0.0.0', '--local', '--insecure-local-network'])
     expect(options.host).toBe('0.0.0.0')
     expect(options.local).toBe(true)
+    expect(options.insecureLocalNetwork).toBe(true)
   })
 })
 
