@@ -1,10 +1,14 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 import { defineNuxtConfig } from 'nuxt/config'
+import { jqWasmAssetPlugin } from './vite/jqWasmAsset'
 
-// Content Security Policy for module workers, jq WASM, and inline styles
+// Content Security Policy for module workers, jq (engine/jq.ts), and inline styles.
+// The jq backend is the jq-web WASM build: 'wasm-unsafe-eval' covers the
+// WebAssembly instantiation in the worker, and the binary is same-origin
+// (`/_nuxt/jq.wasm.wasm`, covered by connect-src 'self').
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'", // wasm-unsafe-eval for jq-web, unsafe-inline for Nuxt/Vue
+  "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'", // wasm-unsafe-eval reserved for a WASM jq build, unsafe-inline for Nuxt/Vue
   "style-src 'self' 'unsafe-inline'", // Tailwind/DaisyUI uses inline styles
   "worker-src 'self' blob:", // Web Workers and module workers
   "connect-src 'self' https:", // For URL loading (fetch)
@@ -51,8 +55,9 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
 
   vite: {
+    plugins: [jqWasmAssetPlugin()],
     optimizeDeps: {
-      include: ['jq-web'],
+      include: ['jq-web/jq.wasm.js'],
     },
     worker: {
       format: 'es',
@@ -94,7 +99,6 @@ export default defineNuxtConfig({
       maxEditOverrideBytes: Number(process.env['VITE_MAX_EDIT_BYTES']) || 10 * 1024 * 1024, // 10 MiB
       maxHandoverPayloadBytes: Number(process.env['VITE_HANDOVER_MAX_PAYLOAD']) || 100 * 1024 * 1024, // 100 MiB
       largeRowThresholdBytes: Number(process.env['VITE_LARGE_ROW_THRESHOLD']) || 1 * 1024 * 1024, // 1 MiB
-      jqWasmUrl: '/jq-web/jq.wasm',
     },
   },
 

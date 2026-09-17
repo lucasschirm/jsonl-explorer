@@ -253,3 +253,48 @@ describe('jsonl.worker text filter (TSK0026)', () => {
     expect(rows.rows).toHaveLength(0)
   })
 })
+
+describe('jsonl.worker jq filter (TSK0027)', () => {
+  it('verdicts come from the real jq backend and getRows serves the matched lineIds', async () => {
+    const rows = ['{"tag":"x","n":1}', '{"tag":"y","n":2}', '{"tag":"x","n":3}', '', '{"tag":"x","n":4}']
+    await initMemoryOnly('jq.jsonl', rows.map((r) => r + '\n').join(''))
+    await indexNow()
+
+    await postFilter('r-f1', 'op-f1', 'jq', '.tag == "x"')
+    const res = await waitForResponse('r-f1')
+    expect(res.ok).toBe(true)
+    const value = res.value as { matchedRows: number; totalRows: number; generation: number; partial: boolean }
+    expect(value.matchedRows).toBe(3) // blank row is an error, not a match
+    expect(value.totalRows).toBe(5)
+    expect(value.partial).toBe(false)
+
+    const rowsRes = await getRowsValue(value.generation)
+    expect(rowsRes.rows.map((r) => r.lineId)).toEqual([1, 3, 5])
+  })
+
+  it('runs 64-bit return paths (the asm.js bundle dies on these)', async () => {
+    const payload = Array.from({ length: 5000 }, (_, i) => `{"i":${i}}\n`).join('')
+    await initMemoryOnly('mod.jsonl', payload)
+    await indexNow()
+
+    await postFilter('r-f1', 'op-f1', 'jq', '.i % 2 == 0')
+    const res = await waitForResponse('r-f1')
+    expect(res.ok).toBe(true)
+    const value = res.value as { matchedRows: number; generation: number }
+    expect(value.matchedRows).toBe(2500)
+
+    const rowsRes = await getRowsValue(value.generation, 10)
+    expect(rowsRes.rows.map((r) => r.lineId)).toEqual([1, 3, 5, 7, 9, 11, 13, 15, 17, 19])
+  })
+
+  it('a filter that does not parse fails with a syntax error', async () => {
+    await initMemoryOnly('bad.jsonl', '{"a":1}\n')
+    await indexNow()
+
+    await postFilter('r-f1', 'op-f1', 'jq', '.a..')
+    const res = await waitForResponse('r-f1')
+    expect(res.ok).toBe(false)
+    expect(res.error?.code).toBe('FILTER_FAILED')
+    expect(res.error?.message).toContain('syntax error')
+  })
+})

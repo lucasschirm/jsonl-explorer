@@ -12,6 +12,7 @@
     "lint": "eslint . --ext .ts,.vue,.js --cache",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test:unit": "vitest run --config vitest.config.ts",
+    "smoke:jq": "node scripts/jq-smoke.mjs",
     "test:e2e": "playwright test",
     "screenshots": "npx tsx scripts/capture-screenshots.ts"
   },
@@ -42,6 +43,7 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
+    "vite": "^7.3.6",
     "vitest": "^1.4.0"
   }
 }

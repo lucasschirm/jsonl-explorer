@@ -67,6 +67,8 @@ import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
 import type { ScanProgress, ScanResult } from '../engine/scanner.js'
 import { FilterCancelledError, FilterEngine } from '../engine/filter.js'
 import type { FilterEngineOptions } from '../engine/filter.js'
+import { getJqRuntime } from '../engine/jq.js'
+import type { JqRuntimeLike } from '../engine/jq.js'
 import { offsetToNumber } from '../engine/indexer.js'
 import { ENGINE_DEFAULTS } from '../engine/config/adr.js'
 import { escapeForSingleLine } from '../utils/rowPreview.js'
@@ -361,10 +363,21 @@ const editOverrides = new Map<number, string>()
 let rerunSeq = 0
 
 /** Filter engine wiring shared by every (re)initialization. */
+/**
+ * Lazy jq backend (TSK0027): the ~1.75 MB asm bundle is loaded only when a
+ * jq filter actually runs; text filters never pay for it.
+ */
+const jqRuntime: JqRuntimeLike = {
+  compile: (query) => getJqRuntime().then((runtime) => runtime.compile(query)),
+  runVerdicts: (program, rows, isAborted) =>
+    getJqRuntime().then((runtime) => runtime.runVerdicts(program, rows, isAborted)),
+}
+
 const filterEngineOptions: FilterEngineOptions = {
   postEvent: (event) => self.postMessage(event),
   getEditOverride: (lineId) => editOverrides.get(lineId) ?? null,
   isIndexComplete: () => indexComplete,
+  jq: jqRuntime,
 }
 
 /**

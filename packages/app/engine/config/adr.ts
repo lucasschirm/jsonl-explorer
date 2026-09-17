@@ -186,33 +186,68 @@ export const HANDOVER_CONFIG = {
 /**
  * ADR-005: jq Implementation Choice
  *
- * Decision: jq-web (WASM), dynamically imported
+ * Decision: jq-web, dynamically imported (TSK0027 resolved the build)
  *
  * Rationale:
  * - Real jq semantics in browser (not a subset)
- * - WASM compilation, ~2.5 MB gzipped
- * - Lazy-loaded only when jq: filter first used
+ * - Lazy-loaded only when a jq filter first runs (text filters never pay)
  * - Pinned version: 0.5.x (known working)
  * - Isolated behind engine/jq.ts for swapability
  *
  * Risk Mitigation (R14):
  * - jq-web is unmaintained-ish; pin version
  * - Engine isolation allows swap to custom jq-subset or maintained WASM build
- * - Compile once, batch calls, progress/cancel support
- * - Document O(n) parse per row performance
- *
- * Configuration:
- * - WASM URL: /jq-web/jq.wasm (served from public/)
- * - Worker: lazy import in jsonl.worker.ts
- * - Cache: compiled programs cached by query string
+ * - Batched verdict calls keep per-row cost ~3500x below single-row calls
+ *   (~11 µs/row batched vs ~40 ms/row measured on the WASM build)
+ * - Rows are pre-validated with JSON.parse: a malformed input silently
+ *   poisons the jq-web module (both builds) and must never reach it
+ * - Cancel/progress are checked between batches (batches bounded in size)
  *
  * References: PLAN.md 2, 4.2, Risks R14
  */
 
+/**
+ * ADR: jq WASM integration (TSK0027)
+ *
+ * jq-web 0.5.x has NO compiled-program API: every call re-enters jq's
+ * main() (~40 ms/row measured). engine/jq.ts therefore wraps the user
+ * filter in a one-boolean-per-input VERDICT program and feeds BATCHES of
+ * rows through one call (~11 µs/row measured in 2048-row batches on the
+ * WASM build), with a row-by-row fallback when a runtime error aborts a
+ * batch. Truthiness: a row matches when the filter emits at least one
+ * output that is neither `false` nor `null`; `empty` output means no match.
+ *
+ * Build (validated in the TSK0027 spike): the WASM build
+ * (`jq-web/jq.wasm.js` glue + `jq.wasm.wasm` binary — the
+ * README-recommended build) is used. The asm.js BUNDLE (jq-web's main,
+ * ~1.75 MB, memory embedded) was REJECTED: its glue reads
+ * `env.getTempRet0`, which the asm.js environment never provides, so any
+ * filter reaching a 64-bit return path (e.g. `.i % 2`) throws an
+ * uncatchable `TypeError: wA is not a function` that terminates the
+ * worker. The WASM binary is emitted next to the worker chunk at
+ * `/_nuxt/jq.wasm.wasm` (vite/jqWasmAsset.ts) because the emscripten glue
+ * fetches it relative to its own script url; tests serve it via a fetch
+ * shim (tests/helpers/jqWasmShim.ts). Both builds share a second defect —
+ * a malformed JSON input silently poisons the module (no throw; every
+ * later call returns "") — so rows are pre-validated with JSON.parse
+ * before they reach jq. The backend stays replaceable behind
+ * JqRuntimeLike (no engine/UI module imports jq-web directly).
+ */
 export const JQ_CONFIG = {
   package: 'jq-web',
   version: '0.5.x',
-  wasmPath: '/jq-web/jq.wasm',
+  build: 'wasm (jq.wasm.js glue + jq.wasm.wasm binary)',
+  buildBytes: { glue: 96_422, wasm: 815_011 },
+  rejectedBuild: {
+    name: 'asm.js bundle (jq.asm.bundle.min.js, memory embedded)',
+    bytes: 1_751_997,
+    reason:
+      'glue reads env.getTempRet0 which the asm.js env never provides; filters on 64-bit return paths (e.g. `.i % 2`) throw an uncatchable TypeError and kill the worker',
+  },
+  assetPath: '/_nuxt/jq.wasm.wasm',
+  batch: { maxRows: 2048, maxBytes: 262_144 },
+  perRowMicroseconds: { batched: 11, singleRow: 40_000 },
+  prevalidateRows: true,
   lazyLoad: true,
   isolateBehind: 'engine/jq.ts',
 } as const

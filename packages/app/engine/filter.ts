@@ -17,6 +17,10 @@
  * - **Partial results**: when indexing is still in flight the scan
  *   covers the committed snapshot and reports `partial: true`; the
  *   worker reruns the latest query once indexing completes.
+ * - **jq scans are batched** (TSK0027): the injected runtime (engine/jq.ts,
+ *   the only jq-web consumer) evaluates groups of row texts in one call
+ *   and returns one boolean verdict per row; batches are bounded by row
+ *   count and bytes so cancel/progress stay responsive.
  *
  * Memory stays bounded by the source index plus match IDs: row text is
  * decoded per row and immediately dropped; the match index itself is a
@@ -25,6 +29,8 @@
 
 import { PROTOCOL_NAMESPACE, PROTOCOL_VERSION } from '@jsonl-explorer/shared'
 import type { FilterProgressEvent } from '@jsonl-explorer/shared'
+import { JQ_BATCH_MAX_BYTES, JQ_BATCH_MAX_ROWS } from './jq.js'
+import type { JqRuntimeLike } from './jq.js'
 
 /** Rows per progress emission (time-throttled further by the caller). */
 export const PROGRESS_INTERVAL_ROWS = 1000
@@ -62,6 +68,8 @@ export interface FilterEngineOptions {
   postEvent: FilterEventSink
   getEditOverride: EditOverrideLookup
   isIndexComplete: () => boolean
+  /** jq backend (TSK0027); required for kind 'jq', ignored for 'text'. */
+  jq?: JqRuntimeLike
 }
 
 export interface FilterScanResult {
@@ -76,8 +84,8 @@ export interface FilterScanResult {
 interface FilterState {
   kind: 'text' | 'jq'
   query: string
-  /** Compiled jq program (null for text kind). */
-  jqProgram: ((input: unknown) => unknown[]) | null
+  /** Opaque compiled jq program (null for text kind). */
+  jqProgram: string | null
   /** Ascending original-row IDs of matches (only [0, matchedCount) live). */
   matchedRows: Uint32Array
   matchedCount: number
@@ -103,14 +111,6 @@ function binarySearchRow(rows: Uint32Array, count: number, rowId: number): numbe
   return lo
 }
 
-/** jq truthiness: any output except false/null is a match; none = no match. */
-function jqTruthy(program: (input: unknown) => unknown[], json: unknown): boolean {
-  for (const result of program(json)) {
-    if (result !== false && result !== null && result !== undefined) return true
-  }
-  return false
-}
-
 export class FilterEngine {
   private state: FilterState = {
     kind: 'text',
@@ -130,6 +130,7 @@ export class FilterEngine {
   private readonly postEvent: FilterEventSink
   private readonly getEditOverride: EditOverrideLookup
   private readonly isIndexComplete: () => boolean
+  private readonly jq?: JqRuntimeLike
 
   constructor(
     indexer: FilterIndexerLike,
@@ -141,6 +142,7 @@ export class FilterEngine {
     this.postEvent = options.postEvent
     this.getEditOverride = options.getEditOverride
     this.isIndexComplete = options.isIndexComplete
+    this.jq = options.jq
   }
 
   isFiltered(): boolean {
@@ -204,7 +206,7 @@ export class FilterEngine {
   async filter(kind: 'text' | 'jq', query: string): Promise<FilterScanResult> {
     const token = ++this.scanToken
     this.state.cancelled = false
-    const jqProgram = kind === 'jq' ? await this.compileJq(query) : null
+    let jqProgram: string | null = null
     const totalRows = this.indexer.getCommittedRows()
     const partial = !this.isIndexComplete()
     const startedAt = performance.now()
@@ -213,7 +215,12 @@ export class FilterEngine {
       count: 0,
       errors: 0,
     }
-    await this.scanRows(token, kind, query, jqProgram, totalRows, buffer)
+    if (kind === 'jq') {
+      jqProgram = await this.compileJq(query)
+      await this.scanJqRows(token, jqProgram, totalRows, buffer)
+    } else {
+      await this.scanTextRows(token, query, totalRows, buffer)
+    }
     // Atomic swap: kind/query/index/count/hasFilter all land together.
     this.state.kind = kind
     this.state.query = query
@@ -230,11 +237,10 @@ export class FilterEngine {
     }
   }
 
-  private async scanRows(
+  /** Literal text scan: one decoded row per iteration. */
+  private async scanTextRows(
     token: number,
-    kind: 'text' | 'jq',
     query: string,
-    jqProgram: ((input: unknown) => unknown[]) | null,
     totalRows: number,
     buffer: { rows: Uint32Array; count: number; errors: number },
   ): Promise<void> {
@@ -242,18 +248,60 @@ export class FilterEngine {
       if (token !== this.scanToken || this.state.cancelled) {
         throw new FilterCancelledError('Filter cancelled')
       }
-      const outcome = await this.matchesRow(kind, query, jqProgram, i)
-      if (outcome === true) {
-        this.addMatch(buffer, i)
-      } else if (outcome === 'error') {
-        buffer.errors++
-      }
+      const text = await this.rowText(i)
+      if (text.includes(query)) this.addMatch(buffer, i)
       if (
         (i + 1) % PROGRESS_INTERVAL_ROWS === 0 &&
         this.state.operationId &&
         this.shouldEmitProgress()
       ) {
         this.emitProgress(i + 1, buffer.count, totalRows)
+      }
+    }
+  }
+
+  /**
+   * jq scan: batches of row texts go through the runtime (one jq call per
+   * batch). Edit overrides are substituted into the batch as their text,
+   * so an edited row is judged by its edited content without a source read.
+   */
+  private async scanJqRows(
+    token: number,
+    program: string,
+    totalRows: number,
+    buffer: { rows: Uint32Array; count: number; errors: number },
+  ): Promise<void> {
+    const isAborted = () => token !== this.scanToken || this.state.cancelled
+    let i = 0
+    while (i < totalRows) {
+      if (isAborted()) throw new FilterCancelledError('Filter cancelled')
+      // Batch bounds: row count and decoded bytes (a single oversized row
+      // still gets its own batch).
+      let end = i
+      let count = 0
+      let bytes = 0
+      while (end < totalRows && count < JQ_BATCH_MAX_ROWS && bytes < JQ_BATCH_MAX_BYTES) {
+        const len =
+          this.indexer.getLineEnd(end) - this.indexer.getLineStart(end) + 1
+        if (len > 0) {
+          count++
+          bytes += len
+        }
+        end++
+      }
+      const rows: string[] = []
+      for (let k = i; k < end; k++) rows.push(await this.rowText(k))
+      const result = await this.jq?.runVerdicts(program, rows, isAborted)
+      if (result === undefined) {
+        throw new Error('jq runtime not available (kind "jq" requires options.jq)')
+      }
+      for (let k = 0; k < rows.length; k++) {
+        if (result.verdicts[k] === true) this.addMatch(buffer, i + k)
+      }
+      buffer.errors += result.errorCount
+      i = end
+      if (this.state.operationId && this.shouldEmitProgress()) {
+        this.emitProgress(end, buffer.count, totalRows)
       }
     }
   }
@@ -271,41 +319,22 @@ export class FilterEngine {
     buffer.count++
   }
 
-  /** true = match, false = no match, 'error' = row skipped (bad JSON for jq). */
-  private async matchesRow(
-    kind: 'text' | 'jq',
-    query: string,
-    jqProgram: ((input: unknown) => unknown[]) | null,
-    rowIndex: number,
-  ): Promise<boolean | 'error'> {
+  /**
+   * Display text of a row for the text scan: edit override when present,
+   * else the source bytes. Blank rows decode to '' (they match the empty
+   * query and only it).
+   */
+  private async rowText(rowIndex: number): Promise<string> {
     const override = this.getEditOverride(rowIndex + 1)
-    if (override !== null) {
-      return this.testText(kind, query, jqProgram, override)
-    }
+    if (override !== null) return override
     const lineStart = this.indexer.getLineStart(rowIndex)
     const lineEnd = this.indexer.getLineEnd(rowIndex)
     const length = lineEnd - lineStart + 1
-    // Blank rows are real rows with an empty display range: they match the
-    // empty text query (and only it) for kind 'text'.
-    if (length <= 0) return this.testText(kind, query, jqProgram, '')
+    if (length <= 0) return ''
     const bytes = await this.source.readRange(lineStart, length)
-    return this.testText(kind, query, jqProgram, decodeForFilter(bytes))
+    return decodeForFilter(bytes)
   }
 
-  private testText(
-    kind: 'text' | 'jq',
-    query: string,
-    jqProgram: ((input: unknown) => unknown[]) | null,
-    text: string,
-  ): boolean | 'error' {
-    if (kind === 'text') return text.includes(query)
-    if (jqProgram === null) return 'error'
-    try {
-      return jqTruthy(jqProgram, JSON.parse(text))
-    } catch {
-      return 'error'
-    }
-  }
 
   private shouldEmitProgress(): boolean {
     const now = performance.now()
@@ -330,13 +359,11 @@ export class FilterEngine {
     })
   }
 
-  private async compileJq(query: string): Promise<(input: unknown) => unknown[]> {
-    // Dynamic import keeps jq-WASM out of the initial worker bundle; the
-    // real integration (compile-once, WASM loading under CSP) lands in
-    // TSK0027. Until then jq filters fail typed (FILTER_FAILED) when the
-    // program is invalid (compile rejects).
-    const mod = await import('jq-web')
-    const program = await mod.compile(query)
-    return program as (input: unknown) => unknown[]
+  /** Compiles a jq filter (parse-checked) via the injected runtime. */
+  private async compileJq(query: string): Promise<string> {
+    if (this.jq === undefined) {
+      throw new Error('jq runtime not available (kind "jq" requires options.jq)')
+    }
+    return this.jq.compile(query)
   }
 }
