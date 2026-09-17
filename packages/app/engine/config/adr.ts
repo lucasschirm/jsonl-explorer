@@ -538,6 +538,40 @@ export const ENGINE_DEFAULTS = {
  */
 
 // ============================================================================
+// DETAIL LOADER AND READ-ONLY JSON TREE (TSK0024)
+// ============================================================================
+/**
+ * Detail loader and read-only JSON tree (TSK0024):
+ * - The detail loads the FULL text of the active row on demand
+ *   (getLine) — list previews stay byte-capped; the detail is exact
+ *   and unescaped (control characters survive for parsing).
+ * - Stale-load cancellation is token-based: each load bumps a token;
+ *   an answer that no longer matches the token OR the active line id
+ *   is dropped. Rapid selection can never render a row the user has
+ *   already left (no "flash of the previous row").
+ * - The tree (JsonTree/JsonNode) renders the PARSED value; collapse
+ *   state is per-node local state — independent, and never a mutation
+ *   of the value or the source row. Containers with more than 50
+ *   children start collapsed (DOM guard on first render).
+ * - Token styling uses DaisyUI semantic color utilities (theme-aware
+ *   CSS variables): key=primary, string=success, number=warning,
+ *   boolean=info, null=dimmed italic. No hardcoded colors.
+ * - Invalid JSON rows render as raw text with a role=alert banner and
+ *   a one-time toast on selection — the row is displayed, never
+ *   repaired or rewritten.
+ * - Rows above ENGINE_DEFAULTS.largeRowDetailThreshold (1 MiB) default
+ *   to RAW mode; the tree is parsed/rendered only after explicit
+ *   confirmation ("View as JSON tree"). A single giant row cannot
+ *   freeze the UI automatically.
+ * - Format/Compact are PRESENTATION-only (detail store viewMode): they
+ *   decide how the parsed document is serialized for text consumers
+ *   (copy/export, TSK0031+). They never post setEdit and never change
+ *   the worker's text.
+ *
+ * References: PLAN.md 4.3 (right panel), TSK0021 (getLine, previews)
+ */
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 export const ADR_CONFIG = {

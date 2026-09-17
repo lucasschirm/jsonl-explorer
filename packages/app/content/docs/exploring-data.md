@@ -52,12 +52,28 @@ the current view.
 
 ## Right Panel: JSON View
 
-The selected row is parsed and displayed as an interactive JSON tree:
+The selected row's FULL text is loaded on demand (list previews are
+byte-capped; the detail is exact) and rendered as a read-only JSON tree:
 
-- **Collapse/Expand** — Click chevrons to toggle objects and arrays
-- **Child counts** — Collapsed nodes show the number of children
-- **Syntax highlighting** — Colors match the DaisyUI theme (light/dark)
-- **Line numbers** — Optional line numbers for reference
+- **Collapse/Expand** — Click chevrons to toggle objects and arrays,
+  independently per node. Collapsed nodes show their child count.
+- **Syntax highlighting** — Token colors follow the DaisyUI theme
+  (light/dark): keys, strings, numbers, booleans, and nulls are all
+  distinguishable at a glance. Large containers start collapsed so a
+  big document cannot flood the screen on first render.
+- **Invalid JSON** — A row that is not valid JSON is shown as raw text
+  with a warning banner (and a one-time toast on selection); the row
+  itself is never modified.
+- **Large rows** — Rows above the 1 MiB parse threshold default to raw
+  mode. Confirming explicitly is required before the JSON tree is
+  parsed and rendered, so a single giant row can never freeze the UI
+  by itself.
+- **Format / Compact** — Presentation-only modes (pretty, two-space
+  vs minified). They change how the document is presented/serialized
+  for text consumers — they never create an edit and never touch the
+  row's text in the worker.
+- **Rapid selection** — Selecting rows quickly cancels stale loads:
+  only the answer for the row you are currently on is ever rendered.
 
 ## Keyboard Navigation
 
