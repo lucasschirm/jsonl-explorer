@@ -9,9 +9,8 @@
  * appears in router state.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { nextTick } from 'vue'
 import { routeLocationKey, routerKey, type RouteLocationNormalizedLoaded } from 'vue-router'
 import ExplorerPage from '~/pages/explorer.vue'
 import IndexPage from '~/pages/index.vue'
@@ -28,30 +27,63 @@ interface PostedInit {
   url: string
 }
 
-function makeRoute(query: Record<string, string>): RouteLocationNormalizedLoaded {
-  return { query } as unknown as RouteLocationNormalizedLoaded
+function makeRoute(
+  query: Record<string, string>,
+  path = '/explorer',
+): RouteLocationNormalizedLoaded {
+  return { query, path } as unknown as RouteLocationNormalizedLoaded
 }
 
-function routerStub(pushed: string[]) {
-  return { push: (to: string) => { pushed.push(to); return Promise.resolve() } }
+function routerStub(pushed: string[], replaced: string[]) {
+  return {
+    push: (to: string) => {
+      pushed.push(to)
+      return Promise.resolve()
+    },
+    replace: (to: string) => {
+      replaced.push(to)
+      return Promise.resolve()
+    },
+  }
 }
 
 describe('URL startup recovery', () => {
   let pinia: Pinia
   let worker: FakeWorker
   let pushed: string[]
+  let replaced: string[]
 
   function mountExplorer(query: Record<string, string>) {
     return mount(ExplorerPage, {
       global: {
         plugins: [pinia],
         provide: {
-          [routerKey]: routerStub(pushed),
+          [routerKey]: routerStub(pushed, replaced),
           [routeLocationKey]: makeRoute(query),
         },
         stubs: { 'nuxt-link': true },
       },
     })
+  }
+
+  function mountLanding(query: Record<string, string>) {
+    return mount(IndexPage, {
+      global: {
+        plugins: [pinia],
+        provide: {
+          [routerKey]: routerStub(pushed, replaced),
+          [routeLocationKey]: makeRoute(query, '/'),
+        },
+        stubs: { 'nuxt-link': true },
+      },
+    })
+  }
+
+  /** The landing onMounted is async (bootstrap consume, then recovery
+   *  prefill): give the microtask chain a few rounds. */
+  async function settle(): Promise<void> {
+    await flushPromises()
+    await flushPromises()
   }
 
   beforeEach(() => {
@@ -62,6 +94,7 @@ describe('URL startup recovery', () => {
     worker = new FakeWorker()
     useJsonlEngine({ workerFactory: () => worker as unknown as Worker })
     pushed = []
+    replaced = []
   })
 
   it('recovers the URL to memory when bootstrap loading fails', async () => {
@@ -87,6 +120,8 @@ describe('URL startup recovery', () => {
 
     // Back on landing, with the URL available for retry — memory only.
     expect(pushed).toEqual(['/'])
+    // The query was scrubbed (router.replace) before the load started.
+    expect(replaced).toEqual(['/explorer'])
     expect(useUrlRecovery().consumeRecoveredUrl()).toBe('https://example.com/data.jsonl')
     // Consumed: a second read is empty.
     expect(useUrlRecovery().consumeRecoveredUrl()).toBeNull()
@@ -99,10 +134,53 @@ describe('URL startup recovery', () => {
 
     expect(worker.posted.length).toBe(0)
     expect(pushed).toEqual(['/'])
+    expect(replaced).toEqual([]) // invalid: no scrub needed, the push leaves the query
     const toastStore = useToastStore()
     const errorToast = toastStore.toasts.find((t) => t.type === 'error')
     expect(errorToast?.message).toContain('embedded credentials')
     expect(useUrlRecovery().consumeRecoveredUrl()).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('scrubs (router.replace) BEFORE the load request reaches the worker', async () => {
+    const order: string[] = []
+    const realPost = worker.postMessage.bind(worker)
+    worker.postMessage = (message: unknown, transfer?: Transferable[]) => {
+      order.push(`post:${(message as { type?: string }).type}`)
+      return realPost(message, transfer)
+    }
+
+    const wrapper = mount(ExplorerPage, {
+      global: {
+        plugins: [pinia],
+        provide: {
+          [routerKey]: {
+            push: (to: string) => {
+              pushed.push(to)
+              return Promise.resolve()
+            },
+            replace: (to: string) => {
+              order.push(`replace:${to}`)
+              return Promise.resolve()
+            },
+          },
+          [routeLocationKey]: makeRoute({ url: 'https://example.com/data.jsonl' }),
+        },
+        stubs: { 'nuxt-link': true },
+      },
+    })
+    await vi.waitFor(() => expect(order).toContain('post:initUrl'))
+
+    // The scrub (replace to the same path without the query) happened
+    // before any worker traffic: the signed URL never coexists with the
+    // load in the address bar / router state.
+    expect(order.indexOf('replace:/explorer')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('replace:/explorer')).toBeLessThan(order.indexOf('post:initUrl'))
+    const init = worker.posted[0] as PostedInit
+    worker.emit(success(init.requestId, { name: 'data.jsonl', size: 1, type: 'url' }))
+    await flushPromises()
+    expect(pushed).toEqual([]) // stays on /explorer with the file
+    expect(useFileStore().hasFile).toBe(true)
     wrapper.unmount()
   })
 
@@ -155,18 +233,13 @@ describe('URL startup recovery', () => {
     // Simulate the explorer bootstrap failure handoff.
     useUrlRecovery().setRecoveredUrl('https://recovered.example.com/data.jsonl')
 
-    const wrapper: VueWrapper = mount(IndexPage, {
-      global: {
-        plugins: [pinia],
-        provide: { [routerKey]: routerStub(pushed) },
-        stubs: { 'nuxt-link': true },
-      },
-    })
-    await nextTick()
+    const wrapper = mountLanding({})
+    await vi.waitFor(
+      () => expect(document.body.querySelector('input[type="url"]')).toBeTruthy(),
+    )
 
     // The modal (teleported to body) is open with the URL prefilled.
     const urlField = document.body.querySelector('input[type="url"]') as HTMLInputElement
-    expect(urlField).toBeTruthy()
     expect(urlField.value).toBe('https://recovered.example.com/data.jsonl')
 
     // The handoff was consumed exactly once.
@@ -179,16 +252,50 @@ describe('URL startup recovery', () => {
   })
 
   it('does not open the modal on a normal landing visit', async () => {
-    const wrapper = mount(IndexPage, {
-      global: {
-        plugins: [pinia],
-        provide: { [routerKey]: routerStub(pushed) },
-        stubs: { 'nuxt-link': true },
-      },
-    })
-    await nextTick()
+    const wrapper = mountLanding({})
+    await settle()
 
     expect(document.body.querySelector('input[type="url"]')).toBeNull()
+    wrapper.unmount()
+    document.body.innerHTML = ''
+  })
+
+  it('CLI capability URL on / (?url=): loads, scrubs, lands on /explorer', async () => {
+    const wrapper = mountLanding({
+      url: 'http://127.0.0.1:8123/capability-123/file.jsonl',
+    })
+    await vi.waitFor(() => expect(worker.posted.length).toBe(1))
+    const init = worker.posted[0] as PostedInit
+    expect(init.url).toBe('http://127.0.0.1:8123/capability-123/file.jsonl')
+    worker.emit(success(init.requestId, { name: 'file.jsonl', size: 3, type: 'url' }))
+    await flushPromises()
+
+    // Scrubbed in place (no query in the router state), then navigated.
+    expect(replaced).toEqual(['/'])
+    expect(pushed).toEqual(['/explorer'])
+    expect(useFileStore().hasFile).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('failed CLI capability URL: retry modal opens prefilled on landing', async () => {
+    const wrapper = mountLanding({
+      url: 'http://127.0.0.1:8123/capability-123/file.jsonl',
+    })
+    await vi.waitFor(() => expect(worker.posted.length).toBe(1))
+    const init = worker.posted[0] as PostedInit
+    worker.emit(failure(init.requestId, 'URL_NETWORK_ERROR', 'Could not reach the local CLI server'))
+    await vi.waitFor(
+      () => expect(document.body.querySelector('input[type="url"]')).toBeTruthy(),
+    )
+
+    // Already on landing (the replace kept us here; the failure push is a
+    // no-op navigation to the same place) — and the retry modal is open
+    // with the URL prefilled (memory only).
+    expect(replaced).toEqual(['/'])
+    const urlField = document.body.querySelector('input[type="url"]') as HTMLInputElement | null
+    expect(urlField).toBeTruthy()
+    expect(urlField?.value).toBe('http://127.0.0.1:8123/capability-123/file.jsonl')
+    expect(useUrlRecovery().consumeRecoveredUrl()).toBeNull()
     wrapper.unmount()
     document.body.innerHTML = ''
   })

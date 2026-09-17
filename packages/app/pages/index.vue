@@ -3,13 +3,23 @@ import FileDropZone from '~/components/landing/FileDropZone.vue'
 import UrlOpenModal from '~/components/landing/UrlOpenModal.vue'
 import { onMounted, ref } from 'vue'
 import { useUrlRecovery } from '~/composables/useUrlRecovery'
+import { useUrlBootstrap } from '~/composables/useUrlBootstrap'
 
 const showUrlModal = ref(false)
 const initialUrl = ref('')
 
-// PLAN 4.1: if a URL startup failed, we land here with the entered
-// (non-secret) URL in memory — reopen the modal prefilled for a retry.
-onMounted(() => {
+const { consume: consumeUrlBootstrap } = useUrlBootstrap()
+
+// 1) The CLI capability URL (`/?url=...`) is consumed BEFORE the retry
+//    prefill: a failed bootstrap records the URL in memory, and THAT is
+//    what should prefill the modal for a one-click retry.
+// 2) PLAN 4.1: if a URL startup failed earlier, we land here with the
+//    entered (non-secret) URL in memory — reopen the modal prefilled.
+onMounted(async () => {
+  await consumeUrlBootstrap()
+  // If a bootstrap existed and FAILED, its URL is now the recovered value
+  // — the same prefill path applies. On success the navigation to
+  // /explorer leaves this page and the recovery is empty anyway.
   const recovered = useUrlRecovery().consumeRecoveredUrl()
   if (recovered) {
     initialUrl.value = recovered

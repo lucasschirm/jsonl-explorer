@@ -25,6 +25,34 @@ Click "Open from URL" to load a JSONL file from a public HTTP/HTTPS endpoint. Yo
 - URLs with embedded credentials (`user:pass@host`) or fragments (`#...`) are rejected — put secrets in headers instead.
 - If the fetch fails (network, CORS, non-2xx), the modal stays open with your URL so you can retry. Error messages never include header values.
 
+### Deep link (`?url=` bootstrap)
+
+Public URLs (and the CLI's capability URLs) can be opened directly:
+
+```
+https://jsonlexplorer.lucasschirm.com/explorer?url=https://example.com/data.jsonl
+```
+
+- The parameter is **consumed on page load, before anything else**, and is
+  only accepted in its plain form — http/https, no embedded
+  credentials, no fragments. **Headers are never supported from the
+  query** (that would put secrets in the URL): for authenticated loads use
+  the "Open from URL" modal.
+- **Scrubbing**: as soon as the URL is validated, the query is removed
+  from BOTH the address bar and the router state — before the load
+  starts. A large file loads for minutes, and the (possibly signed) URL
+  must not sit in the address bar or history meanwhile. An invalid value
+  gets a toast and a safe return to the landing page.
+- **Referrers**: the app sends a `no-referrer` policy, so the URL can
+  never leak into an outgoing referrer header while it still exists.
+- **Failure**: the load error is toasted and the URL is kept **in memory
+  only** — the landing page reopens the modal prefilled for a one-click
+  retry. Nothing is written to storage.
+- **Refresh**: the session lives in memory only. Refreshing after the
+  scrub loses the loaded file (the explorer returns you to the landing
+  page). To reload the same data, open the original `?url=` link again —
+  or use the prefilled retry while the tab is still open.
+
 ### Header Security
 
 Custom headers are kept in memory only and are never:

@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useFileStore } from '~/stores/file'
 import { useExporterStore } from '~/stores/exporter'
 import { useToastStore } from '~/stores/toasts'
-import { useUrlRecovery } from '~/composables/useUrlRecovery'
+import { useUrlBootstrap } from '~/composables/useUrlBootstrap'
 import { useHandover } from '~/composables/useHandover'
 import { useJsonlEngine } from '~/composables/useJsonlEngine'
-import { decideUrlInput } from '~/utils/urlIntake'
 import { isEditableEventTarget, isModalOpen } from '~/utils/keyboard'
 import LoadingPanel from '~/components/loading/LoadingPanel.vue'
 import FileDropZone from '~/components/landing/FileDropZone.vue'
@@ -19,10 +18,9 @@ import ExportStatus from '~/components/explorer/ExportStatus.vue'
 import ExportConfirmModal from '~/components/explorer/ExportConfirmModal.vue'
 
 const router = useRouter()
-const route = useRoute()
 const fileStore = useFileStore()
 const toastStore = useToastStore()
-const recovery = useUrlRecovery()
+const { consume: consumeUrlBootstrap } = useUrlBootstrap()
 // Destructure: top-level refs are template-unwrapped (a nested
 // `handover.waiting` would be the Ref object — always truthy).
 const { waiting: handoverWaiting, start: startHandover } = useHandover()
@@ -50,43 +48,8 @@ async function resumeIndex() {
   await engineApi.startIndex()
 }
 
-/**
- * Consume the `?url=` bootstrap (R5): scrub, load, then strip the param.
- * On failure the non-secret URL is kept in memory (useUrlRecovery) so the
- * landing page can offer an immediate retry.
- * @returns true when a `?url=` bootstrap was present (handled or failed).
- */
-async function consumeUrlBootstrap(): Promise<boolean> {
-  const urlParam = route.query.url
-  if (!urlParam || typeof urlParam !== 'string') return false
-
-  // route.query values are already decoded once by vue-router; do not
-  // decode again (a second pass corrupts URLs containing literal '%').
-  const intake = decideUrlInput(urlParam)
-  if (intake.kind !== 'ready') {
-    if (intake.kind === 'invalid') {
-      toastStore.error(intake.message, 'Invalid URL parameter')
-    }
-    await router.push('/')
-    return true
-  }
-
-  try {
-    await fileStore.loadFromUrl(intake.url)
-    // The URL (possibly with a query string) never stays in the address bar.
-    if (import.meta.client) {
-      history.replaceState({}, '', '/explorer')
-    }
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Failed to load from URL parameter'
-    toastStore.error(message, 'URL load failed')
-    recovery.setRecoveredUrl(intake.url)
-    await router.push('/')
-  }
-  return true
-}
-
+// The `?url=` bootstrap is consumed before the empty-state guard
+// (useUrlBootstrap: scrub address bar + router state, then load).
 onMounted(async () => {
   const hadBootstrap = await consumeUrlBootstrap()
 
