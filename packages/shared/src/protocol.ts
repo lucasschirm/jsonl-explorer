@@ -387,6 +387,31 @@ export interface GetLineResponse extends BaseResponse {
   }
 }
 
+/**
+ * Where (or whether) a stable source line is in the CURRENT view.
+ * Used to keep selection stable across filter/index changes: the worker
+ * is authoritative for the display->lineId mapping, so the UI never
+ * guesses whether the active row still matches.
+ */
+export interface LinePositionRequest extends BaseRequest {
+  type: 'linePosition'
+  lineId: number
+}
+
+export interface LinePositionResponse extends BaseResponse {
+  ok: true
+  value: {
+    lineId: number
+    /** False when the line is not part of the current view (filtered out
+     *  or past the committed rows). */
+    visible: boolean
+    /** Display index in the current view (null when not visible). */
+    displayIndex: number | null
+    /** Generation the answer was computed for (stale detection). */
+    generation: number
+  }
+}
+
 // ============================================================================
 // Editing
 // ============================================================================
@@ -484,6 +509,7 @@ export type WorkerRequest =
   | FilterRequest
   | GetRowsRequest
   | GetLineRequest
+  | LinePositionRequest
   | SetEditRequest
   | ExportStartRequest
   | ExportNextRequest
@@ -499,6 +525,7 @@ export type WorkerResponse =
   | RpcResponse<FilterResponse['value']>
   | RpcResponse<GetRowsResponse['value']>
   | RpcResponse<GetLineResponse['value']>
+  | RpcResponse<LinePositionResponse['value']>
   | RpcResponse<SetEditResponse['value']>
   | RpcResponse<ExportStartResponse['value']>
   | RpcResponse<ExportNextResponse['value']>
@@ -616,6 +643,12 @@ export interface JsonlEngine {
   filter(options: { operationId: string; kind: 'text' | 'jq'; query: string }): Promise<FilterResult>
   getRows(options: { start: number; count: number; generation: number }): Promise<{ rows: RowData[]; generation: number; totalFiltered: number }>
   getLine(lineId: number): Promise<{ lineId: number; text: string; isEdited: boolean }>
+  /**
+   * Authoritative position of a stable line id in the current view
+   * (TSK0023): where it renders if it still matches, or not-visible.
+   * Used for selection transitions — the main thread never guesses.
+   */
+  linePosition(lineId: number): Promise<{ lineId: number; visible: boolean; displayIndex: number | null; generation: number }>
   setEdit(lineId: number, text?: string): Promise<{ lineId: number; isEdited: boolean; newGeneration: number; filteredIndex?: number }>
   exportStart(options: { generation: number }): Promise<{ token: string; estimatedBytes: number; totalRows: number }>
   exportNext(token: string): Promise<{ data: Uint8Array; done: boolean; rowsExported: number }>

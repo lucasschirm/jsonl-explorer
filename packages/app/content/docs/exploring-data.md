@@ -30,7 +30,7 @@ starts from a clean engine.
 - **Preview** — Each row shows a truncated, single-line escaped preview
 - **Selection** — Click any row to view its full JSON in the right panel. The highlight follows the row's stable source line id, so it stays on the same row even when a filter changes row positions
 - **Placeholders** — Rows whose batched window is still in flight show a short placeholder bar, so the list never blocks or reflows while data loads
-- **Status bar** — Shows total and filtered row counts
+- **Status bar** — Shows total and filtered row counts (always the worker's own numbers, never local arithmetic), the current pipeline state (indexing with percent, paused, failed, or filtering with scanned/matched), and a partial marker while the index is still committing (the total is then a lower bound that keeps growing)
 
 ### How rows are loaded
 
@@ -61,7 +61,16 @@ The selected row is parsed and displayed as an interactive JSON tree:
 
 ## Keyboard Navigation
 
-- `↑` / `↓` — Move selection up/down
+The row list is keyboard operable: click it (or Tab to it) to give it
+focus, then
+
+- `↑` / `↓` — Move the selection up/down (clamped at the first and last
+  row; the row is scrolled into view and fetched on demand when it is
+  not cached yet). Keys are never captured while a text editor is
+  focused.
+
+Planned (with the detail panel and search):
+
 - `Enter` — Focus JSON editor on right panel
 - `Ctrl+F` — Focus search bar
 

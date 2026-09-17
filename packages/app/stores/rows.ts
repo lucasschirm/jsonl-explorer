@@ -225,6 +225,13 @@ export const useRowStore = defineStore('rows', () => {
     return rows.value.get(lineId) ?? null
   }
 
+  /** Display index of a cached line (null when not in the cache). Reads a
+   *  plain Map — pair with `version` when used in a reactive scope. */
+  function displayIndexForLine(lineId: number): number | null {
+    const displayIndex = lineToDisplay.get(lineId)
+    return displayIndex === undefined ? null : displayIndex
+  }
+
   /**
    * Full, unescaped row text for the detail panel (fetched separately
    * from the capped list preview). Null when no source is loaded.
@@ -279,6 +286,7 @@ export const useRowStore = defineStore('rows', () => {
     loadError,
     ensureWindow,
     rowForDisplay,
+    displayIndexForLine,
     getFullText,
     reset,
   }

@@ -123,8 +123,73 @@ function isSelected(index: number): boolean {
 
 function onRowClick(index: number): void {
   const row = rowStore.rowForDisplay(index)
-  if (row) selectionStore.activate(row.lineId)
+  if (!row) return
+  selectionStore.activate(row.lineId, index)
+  scrollRef.value?.focus() // arrow keys work right after a click
 }
+
+/** Keyboard focus guard: never hijack keys from text editors (TSK0023). */
+function isEditable(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return (
+    target.isContentEditable ||
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.tagName === 'SELECT'
+  )
+}
+
+/** Keyboard cursor waiting for its (uncached) row to arrive. */
+let pendingCursor: number | null = null
+
+/** ArrowUp/ArrowDown: move the active row, scroll it into view, clamp at
+ *  the view boundaries (no wrap). One row is fetched on demand when the
+ *  target is not cached yet; activation lands when it arrives. */
+function onKeydown(event: KeyboardEvent): void {
+  if (isEditable(event.target)) return
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  event.preventDefault()
+  const total = rowStore.totalFiltered
+  if (total === 0) return
+
+  const base = selectionStore.activeDisplayIndex
+  const step = event.key === 'ArrowDown' ? 1 : -1
+  const target = Math.min(Math.max((base ?? (step > 0 ? -1 : 1)) + step, 0), total - 1)
+
+  virtualizer.value.scrollToIndex(target, { align: 'auto' })
+  const row = rowStore.rowForDisplay(target)
+  if (row) {
+    selectionStore.activate(row.lineId, target)
+    return
+  }
+  // Not cached yet: fetch exactly that row and activate when it lands.
+  pendingCursor = target
+  rowStore.ensureWindow(target, target)
+}
+
+// The row the keyboard cursor is waiting for arrived.
+watch(
+  () => rowStore.version,
+  () => {
+    if (pendingCursor === null) return
+    const row = rowStore.rowForDisplay(pendingCursor)
+    if (row) {
+      selectionStore.activate(row.lineId, pendingCursor)
+      pendingCursor = null
+    }
+  },
+)
+
+// The store resolved/changed the active row (filter transitions, auto-
+// select): keep it on screen.
+watch(
+  () => selectionStore.activeDisplayIndex,
+  (index) => {
+    if (index !== null && rowStore.totalFiltered > 0) {
+      virtualizer.value.scrollToIndex(index, { align: 'auto' })
+    }
+  },
+)
 </script>
 
 <template>
@@ -162,7 +227,9 @@ function onRowClick(index: number): void {
       data-testid="row-list-scroll"
       role="list"
       aria-label="Rows"
-      class="flex-1 min-h-0 overflow-y-auto"
+      tabindex="0"
+      class="flex-1 min-h-0 overflow-y-auto focus:outline-none focus:ring-1 focus:ring-primary/50"
+      @keydown="onKeydown"
     >
       <div
         :data-cache-version="cacheVersion"

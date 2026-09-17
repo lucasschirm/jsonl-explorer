@@ -500,6 +500,44 @@ export const ENGINE_DEFAULTS = {
  */
 
 // ============================================================================
+// SELECTION TRANSITIONS AND KEYBOARD NAVIGATION (TSK0023)
+// ============================================================================
+/**
+ * Selection transitions and keyboard navigation (TSK0023):
+ * - The WORKER is authoritative for selection transitions. When the view
+ *   changes (filter completion, index commit), the selection store asks
+ *   the worker `linePosition(lineId)`: visible -> KEEP the active row at
+ *   the returned display index; not visible + rows remain -> REPLACE with
+ *   the first result; not visible + zero rows -> CLEAR. The main thread
+ *   never re-derives "still matched?" locally — the filter snapshot
+ *   lives in the worker, and a local guess would fork on every view
+ *   change. `positionOfLine` is an O(log n) binary search on the worker's
+ *   matched-rows Uint32Array (identity view: row < committedRows).
+ * - Answers carry the worker generation and are GUARDED: an answer that
+ *   no longer matches the current generation (a newer view superseded
+ *   the request) is dropped, so slow RPCs cannot apply stale decisions.
+ * - `activeLineId` is the stable source line id; `activeDisplayIndex` is
+ *   its position in the CURRENT view (null until known). The first
+ *   complete row auto-selects once row 0 is cached (initial load and
+ *   after a replace); source replacement clears everything via
+ *   fileStore.resetDerivedState().
+ * - The status bar (explorer/StatusBar.vue) shows only worker-snapshot
+ *   numbers: total (from indexComplete), filtered (from the worker's
+ *   getRows/filter snapshots) — plus state text (indexing %/paused/
+ *   failed, filtering scanned/matched) and a partial marker while the
+ *   index is incomplete (the total is then a lower bound).
+ * - Keyboard navigation: ArrowUp/ArrowDown on the focused list scroller
+ *   move the active row with clamped boundaries (no wrap, no movement
+ *   on an empty view). The target row is fetched on demand (single-row
+ *   window) when not cached; activation lands when it arrives. The
+ *   handler ignores events whose target is an editable element
+ *   (input/textarea/select/contentEditable) so future in-list editors
+ *   are never hijacked.
+ *
+ * References: PLAN.md 4.3 (explorer), TSK0022 (row list, selection store)
+ */
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 export const ADR_CONFIG = {

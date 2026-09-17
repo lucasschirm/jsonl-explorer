@@ -206,6 +206,13 @@ export class WorkerClient implements JsonlEngine {
     return await this.postRequest<{ lineId: number; text: string; isEdited: boolean }>({ type: 'getLine', lineId })
   }
 
+  /** Current-view position of a stable line (selection transitions). */
+  async linePosition(
+    lineId: number,
+  ): Promise<{ lineId: number; visible: boolean; displayIndex: number | null; generation: number }> {
+    return await this.postRequest({ type: 'linePosition', lineId })
+  }
+
   async setEdit(
     lineId: number,
     text?: string,

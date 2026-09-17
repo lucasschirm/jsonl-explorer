@@ -187,4 +187,60 @@ describe('jsonl.worker row access (TSK0021)', () => {
     expect(value.rows[0]!.displayIndex).toBe(0)
     expect(value.rows[0]!.lineId).toBe(2) // the 'x' row (1-based)
   })
+
+  it('linePosition: identity positions before any filter', async () => {
+    await initFileAndIndex('pos.jsonl', SMALL + BIG + TABBED)
+
+    post({ requestId: 'r-pos1', operationId: 'op-pos1', type: 'linePosition', lineId: 2 })
+    const res = await waitForResponse('r-pos1')
+    const value = res.value as { visible: boolean; displayIndex: number; generation: number }
+    expect(value.visible).toBe(true)
+    expect(value.displayIndex).toBe(1)
+    expect(value.generation).toBe(1)
+
+    // Past the committed rows: not visible (partial indexing).
+    post({ requestId: 'r-pos2', operationId: 'op-pos2', type: 'linePosition', lineId: 99 })
+    const res2 = await waitForResponse('r-pos2')
+    const value2 = res2.value as { visible: boolean; displayIndex: number | null }
+    expect(value2.visible).toBe(false)
+    expect(value2.displayIndex).toBeNull()
+  })
+
+  it('linePosition: filtered view answers rank or not-visible', async () => {
+    await initFileAndIndex('posf.jsonl', SMALL + BIG + TABBED)
+
+    post({
+      requestId: 'r-filter',
+      operationId: 'op-filter',
+      type: 'filter',
+      kind: 'text',
+      query: 'x',
+    })
+    const filter = await waitForResponse('r-filter')
+    const gen = (filter.value as { generation: number }).generation
+
+    // The matching row: visible at its (new) rank.
+    post({ requestId: 'r-p1', operationId: 'op-p1', type: 'linePosition', lineId: 2 })
+    const p1 = (await waitForResponse('r-p1')).value as {
+      lineId: number
+      visible: boolean
+      displayIndex: number
+      generation: number
+    }
+    expect(p1).toEqual({ lineId: 2, visible: true, displayIndex: 0, generation: gen })
+
+    // A filtered-out row: not visible, even though it exists in the file.
+    post({ requestId: 'r-p2', operationId: 'op-p2', type: 'linePosition', lineId: 1 })
+    const p2 = (await waitForResponse('r-p2')).value as { visible: boolean; displayIndex: number | null }
+    expect(p2.visible).toBe(false)
+    expect(p2.displayIndex).toBeNull()
+  })
+
+  it('linePosition: typed error when no source is initialized', async () => {
+    await import('../../workers/jsonl.worker.js')
+    post({ requestId: 'r-nosrc', operationId: 'op-nosrc', type: 'linePosition', lineId: 1 })
+    const res = await waitForResponse('r-nosrc')
+    expect(res.ok).toBe(false)
+    expect(res.error?.code).toBe('SOURCE_NOT_INITIALIZED')
+  })
 })

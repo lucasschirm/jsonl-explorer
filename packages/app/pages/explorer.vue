@@ -8,10 +8,9 @@ import { useJsonlEngine } from '~/composables/useJsonlEngine'
 import { decideUrlInput } from '~/utils/urlIntake'
 import LoadingPanel from '~/components/loading/LoadingPanel.vue'
 import RowList from '~/components/explorer/RowList.vue'
-import { useRowStore } from '~/stores/rows'
+import StatusBar from '~/components/explorer/StatusBar.vue'
 
 const router = useRouter()
-const rowStore = useRowStore()
 const route = useRoute()
 const fileStore = useFileStore()
 const toastStore = useToastStore()
@@ -194,13 +193,9 @@ async function resetFile() {
         <!-- Row list (TSK0022): virtualized, batched windows, bounded DOM -->
         <RowList />
 
-        <!-- Status bar -->
-        <div class="p-3 border-t border-base-300 bg-base-200 text-xs text-base-content/70">
-          <div class="flex items-center justify-between">
-            <span>Total: <span class="font-mono">{{ engineApi.totalRows }}</span> rows</span>
-            <span>Filtered: <span class="font-mono" data-testid="filtered-count">{{ rowStore.totalFiltered }}</span> rows</span>
-          </div>
-        </div>
+        <!-- Status bar (TSK0023): counts agree with worker snapshots; -->
+        <!-- indexing/filtering/partial states are always visible.        -->
+        <StatusBar />
       </aside>
 
       <!-- Right panel - JSON view -->

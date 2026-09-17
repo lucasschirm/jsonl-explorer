@@ -285,4 +285,115 @@ describe('RowList (TSK0022)', () => {
       expect(wrapper.findAll('[data-testid="row-placeholder"]').length).toBe(0)
     })
   })
+
+  describe('keyboard navigation', () => {
+    /** 5-row source with the initial window answered (rows 1..5 cached). */
+    async function fiveRows(): Promise<void> {
+      await initSource()
+      emitIndexComplete(5, 1)
+      await nextTick()
+      await vi.waitFor(() => expect(getRowsOps().length).toBe(1))
+      answerLast(
+        [
+          makeRow(0, 1, 'a'),
+          makeRow(1, 2, 'b'),
+          makeRow(2, 3, 'c'),
+          makeRow(3, 4, 'd'),
+          makeRow(4, 5, 'e'),
+        ],
+        1,
+        5,
+      )
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-testid="row-placeholder"]').length).toBe(0)
+      })
+    }
+
+    async function press(key: string): Promise<void> {
+      await wrapper.find('[data-testid="row-list-scroll"]').trigger('keydown', { key })
+    }
+
+    it('ArrowDown/ArrowUp move the highlight with clamped boundaries', async () => {
+      await fiveRows()
+      const selectionStore = useSelectionStore()
+
+      // TSK0023 auto-select: the first row is active once available.
+      await vi.waitFor(() => expect(selectionStore.activeLineId).toBe(1))
+      expect(selectionStore.activeDisplayIndex).toBe(0)
+
+      // Down: row 2; Up: back to row 1; Up at the top: clamped (stays).
+      await press('ArrowDown')
+      await vi.waitFor(() => expect(selectionStore.activeDisplayIndex).toBe(1))
+      await press('ArrowUp')
+      await vi.waitFor(() => expect(selectionStore.activeDisplayIndex).toBe(0))
+      await press('ArrowUp')
+      expect(selectionStore.activeDisplayIndex).toBe(0)
+
+      // Down to the last row (4 steps from row 1), then clamped again.
+      for (let i = 0; i < 4; i++) await press('ArrowDown')
+      await vi.waitFor(() => expect(selectionStore.activeDisplayIndex).toBe(4))
+      await press('ArrowDown')
+      expect(selectionStore.activeDisplayIndex).toBe(4)
+      expect(selectionStore.activeLineId).toBe(5)
+    })
+
+    it('fetches an uncached row on demand and activates when it lands', async () => {
+      const selectionStore = useSelectionStore()
+      await initSource()
+      emitIndexComplete(25, 1)
+      await nextTick()
+      await vi.waitFor(() => expect(getRowsOps().length).toBe(1))
+      // Answer only the requested window (0..~17): rows past it are uncached.
+      const op = getRowsOps()[0]!
+      const spanRows: RowData[] = []
+      for (let i = 0; i < op.count!; i++) spanRows.push(makeRow(i, i + 1, `r${i}`))
+      answerLast(spanRows, 1, 25)
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-testid="row-placeholder"]').length).toBe(0)
+      })
+
+      // Auto-select put the cursor on row 0; walk down through the cached
+      // span (each step activates instantly).
+      for (let i = 0; i < op.count! - 1; i++) await press('ArrowDown')
+      await vi.waitFor(() => expect(selectionStore.activeDisplayIndex).toBe(op.count! - 1))
+      // One more step lands on the first UNCACHED row: a single-row window
+      // is fetched and the row activates when it arrives.
+      await press('ArrowDown')
+      await vi.waitFor(() => expect(getRowsOps().length).toBe(2))
+      const followUp = getRowsOps()[1]!
+      expect(followUp.start!).toBe(op.count!)
+      expect(followUp.count!).toBe(1)
+      answerLast([makeRow(op.count!, op.count! + 1, 'target')], 1, 25)
+      await vi.waitFor(() => {
+        expect(selectionStore.activeLineId).toBe(op.count! + 1)
+      })
+      expect(selectionStore.activeDisplayIndex).toBe(op.count!)
+    })
+
+    it('offers no navigation when the view is empty', async () => {
+      await initSource()
+      // No rows: the scroller does not exist (empty state instead), so
+      // there is no focus target and no way to move the selection.
+      expect(wrapper.find('[data-testid="row-list-scroll"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="row-list-empty"]').exists()).toBe(true)
+      expect(useSelectionStore().activeLineId).toBeNull()
+      expect(getRowsOps().length).toBe(0)
+    })
+
+    it('never hijacks keys from editable elements', async () => {
+      await fiveRows()
+      const selectionStore = useSelectionStore()
+      selectionStore.activate(1, 0)
+
+      // Simulate a future in-list editor: an editable child focused inside
+      // the scroller. Its ArrowDown must NOT move the list selection.
+      const scrollEl = wrapper.find('[data-testid="row-list-scroll"]').element as HTMLElement
+      const input = document.createElement('input')
+      scrollEl.appendChild(input)
+      input.focus()
+      await input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      await vi.waitFor(() => expect(selectionStore.activeDisplayIndex).toBe(0))
+      expect(selectionStore.activeLineId).toBe(1)
+    })
+  })
 })

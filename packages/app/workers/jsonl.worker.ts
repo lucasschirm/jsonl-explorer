@@ -23,6 +23,7 @@ import type {
   FilterRequest,
   GetRowsRequest,
   GetLineRequest,
+  LinePositionRequest,
   SetEditRequest,
   ExportStartRequest,
   ExportNextRequest,
@@ -376,6 +377,21 @@ class FilterEngine {
     return this.state.matchedRows[displayIndex] ?? 0
   }
 
+  /**
+   * Display index of a stable source line in the CURRENT view, or null
+   * when it is not part of the view (filtered out, or past the committed
+   * rows while indexing). O(log n) on the matched snapshot.
+   */
+  positionOfLine(lineId: number): number | null {
+    const row = lineId - 1
+    if (row < 0) return null
+    if (!this.hasFilter) {
+      return row < this.indexer.getCommittedRows() ? row : null
+    }
+    const rank = binarySearchRow(this.state.matchedRows, this.state.matchedCount, row)
+    return rank === -1 ? null : rank
+  }
+
   setOperationId(operationId: string): void {
     this.state.operationId = operationId
   }
@@ -596,6 +612,10 @@ self.onmessage = async (event: MessageEvent) => {
       }
       case 'getLine': {
         await handleGetLine(request)
+        break
+      }
+      case 'linePosition': {
+        await handleLinePosition(request)
         break
       }
       case 'setEdit': {
@@ -911,6 +931,42 @@ async function handleGetRows(request: GetRowsRequest): Promise<void> {
     rows,
     generation: currentGeneration,
     totalFiltered,
+  })
+  self.postMessage(response)
+}
+
+/** Index of `row` in matchedRows[0..count) (ascending), or -1. */
+function binarySearchRow(rows: Uint32Array, count: number, row: number): number {
+  let lo = 0
+  let hi = count - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const value = rows[mid] ?? 0
+    if (value < row) lo = mid + 1
+    else if (value > row) hi = mid - 1
+    else return mid
+  }
+  return -1
+}
+
+/**
+ * linePosition (TSK0023): the worker's authoritative answer to "is this
+ * stable line still in the view, and where?" — selection transitions
+ * (keep / replace-with-first / clear) rely on it.
+ */
+async function handleLinePosition(request: LinePositionRequest): Promise<void> {
+  if (!filterEngine || !indexer) {
+    const response = createErrorResponse(request.requestId, 'SOURCE_NOT_INITIALIZED', 'Source not initialized')
+    self.postMessage(response)
+    return
+  }
+
+  const displayIndex = filterEngine.positionOfLine(request.lineId)
+  const response = createSuccessResponse(request.requestId, {
+    lineId: request.lineId,
+    visible: displayIndex !== null,
+    displayIndex,
+    generation: currentGeneration,
   })
   self.postMessage(response)
 }
