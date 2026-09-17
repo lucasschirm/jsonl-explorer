@@ -81,9 +81,14 @@ as the window and the iframe's `src` origin as `EXPLORER_ORIGIN`.
 - 30-second timeout: if no `load` arrives within 30 s of `ready`, the
   receiver is disarmed and the page stays usable (the drop zone remains
   for manual use). The host should time out on its side too.
-- One session per page visit: the first accepted `load` takes ownership;
-  duplicates are ignored silently (so a well-meaning retry cannot be
-  mistaken for a failure).
+- One session per page visit: the first SUCCESSFUL `load` takes ownership
+  for good; duplicates are ignored silently (so a well-meaning retry
+  cannot be mistaken for a failure). A FAILED load takes no ownership, so
+  the host may retry within the timeout window.
+- These behaviors are exercised by a real-browser harness (Playwright):
+  `window.open` hosts, sandboxed iframes, and a hostile page on an
+  unallowed origin (which can neither trigger a load nor receive any
+  reply).
 - Replies (`loaded`/`error`) go only to the validated source with the
   validated exact origin — never `*`.
 - `loaded` is an **async completion notice**: it carries the row count,

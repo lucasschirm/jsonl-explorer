@@ -49,8 +49,6 @@ export class OpfsSpool implements ByteSpool {
   readonly artifactName: string
   private readonly root: FileSystemDirectoryHandle
   private readonly handle: FileSystemFileHandle
-  private stream: FileSystemWritableFileStream | null = null
-  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null
   private size = 0n
   private sealed = false
   private disposed = false
@@ -72,10 +70,22 @@ export class OpfsSpool implements ByteSpool {
     this.assertActive()
     if (this.sealed) throw new SpoolSealedError(this.artifactName)
     if (chunk.length === 0) return
-    const writer = await this.ensureWriter()
+    // OPFS: getFile() only reflects CLOSED writes. A long-lived writer
+    // would therefore hide every streamed byte from concurrent reads
+    // (the indexer reads through readRange while the download streams —
+    // with an unclosed writer it would see an empty file forever).
+    // Each append is thus ONE complete writable cycle: create → write →
+    // close. `keepExistingData` preserves prior content across cycles;
+    // the on-disk file is current after every append, and only the
+    // in-flight chunk is held in RAM at a time.
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null
     try {
+      const stream = await this.handle.createWritable({ keepExistingData: true })
+      writer = stream.getWriter()
       await writer.write(chunk)
+      await writer.close()
     } catch (error) {
+      await writer?.abort().catch(() => {})
       mapQuotaError(error, this.artifactName)
       throw error
     }
@@ -103,37 +113,17 @@ export class OpfsSpool implements ByteSpool {
 
   async seal(): Promise<void> {
     this.assertActive()
+    // All appends already closed their writers: nothing to flush.
     this.sealed = true
-    await this.closeWriter()
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
-    await this.closeWriter()
     try {
       await this.root.removeEntry(this.artifactName)
     } catch {
       // Already gone (crash cleanup, prior dispose): nothing to do.
-    }
-  }
-
-  private async ensureWriter(): Promise<WritableStreamDefaultWriter<Uint8Array>> {
-    if (this.writer) return this.writer
-    this.stream = await this.handle.createWritable()
-    this.writer = this.stream.getWriter()
-    return this.writer
-  }
-
-  private async closeWriter(): Promise<void> {
-    const writer = this.writer
-    this.writer = null
-    this.stream = null
-    if (!writer) return
-    try {
-      await writer.close()
-    } catch {
-      // Closing an already-failed/aborted stream is best effort.
     }
   }
 

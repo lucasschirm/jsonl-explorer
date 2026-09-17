@@ -221,15 +221,20 @@ describe('handover handshake (TSK0037)', () => {
     expect(worker.posted.some((m) => (m as { type?: string }).type === 'initMemory')).toBe(true)
   })
 
-  it('ignores duplicate loads while one is in flight', async () => {
+  it('ignores duplicate loads while in flight AND after the session settled', async () => {
     const handover = startHandover({ maxPayloadBytes: 1024 })
     handover.start()
 
     deliver(loadMessage('{"a":1}\n', 'first.jsonl'))
     await answerInit(worker, 'first.jsonl', 8)
     await vi.waitFor(() => expect(useFileStore().metadata?.name).toBe('first.jsonl'))
-    deliver(loadMessage('{"a":2}\n', 'second.jsonl'))
-    // The duplicate never reaches the worker as a new init.
+    deliver(loadMessage('{"a":2}\n', 'second.jsonl')) // in flight: ignored
+    // Settle the session (index commits → loaded reply → in-flight cleared).
+    await settleIndex(worker, 1)
+    await vi.waitFor(() => expect(sentTypes(host)).toContain('loaded'))
+    // After settlement the ownership is permanent: a late load is still
+    // ignored (the file is showing; re-loading would race the user).
+    deliver(loadMessage('{"a":3}\n', 'third.jsonl'))
     const inits = worker.posted.filter((m) => (m as { type?: string }).type === 'initMemory')
     expect(inits).toHaveLength(1)
   })

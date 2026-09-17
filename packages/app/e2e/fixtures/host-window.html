@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Handover host (window.open)</title>
+  </head>
+  <body>
+    <h1>Handover host (window.open)</h1>
+    <button id="go">Open explorer</button>
+    <pre id="log">[]</pre>
+    <script>
+      // A WELL-BEHAVED host: validates origin AND source, posts with an
+      // exact target origin — the same trust boundary the explorer applies.
+      const log = []
+      let popup = null
+      window.addEventListener('message', (event) => {
+        if (!event.data || event.data.ns !== 'jsonl-explorer') return
+        if (event.origin !== location.origin) return
+        if (event.source !== popup) return
+        log.push({ type: event.data.type, lines: event.data.lines })
+        document.getElementById('log').textContent = JSON.stringify(log)
+        if (event.data.type === 'ready') {
+          popup.postMessage(
+            {
+              ns: 'jsonl-explorer',
+              v: 1,
+              type: 'load',
+              name: 'host.jsonl',
+              payload: '{"a":1}\n{"b":2}\n',
+            },
+            location.origin,
+          )
+        }
+      })
+      // Test hook: send further (duplicate/late) loads.
+      window.sendLoad = (payload, name) => {
+        if (popup) {
+          popup.postMessage(
+            { ns: 'jsonl-explorer', v: 1, type: 'load', name: name || 'dup.jsonl', payload },
+            location.origin,
+          )
+        }
+      }
+      document.getElementById('go').addEventListener('click', () => {
+        popup = window.open(location.origin + '/explorer', 'jsonlexplorer', 'width=1100,height=800')
+      })
+    </script>
+  </body>
+</html>

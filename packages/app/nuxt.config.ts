@@ -2,6 +2,24 @@
 import { defineNuxtConfig } from 'nuxt/config'
 import { jqWasmAssetPlugin } from './vite/jqWasmAsset'
 
+/**
+ * Origins allowed to EMBED (frame) the app: same-origin plus the
+ * handover allowlist (VITE_HANDOVER_ALLOWED_ORIGINS). The clickjacking
+ * policy and the handover trust boundary are the SAME list: only
+ * origins trusted to hand data over may frame the app. `*` is dropped
+ * (fail closed) — a wildcard frame-ancestors would let any page
+ * embed the explorer. (TSK0039: embedding was documented as supported
+ * but X-Frame-Options: DENY forbade it; frame-ancestors is now the
+ * single framing policy.)
+ */
+function frameAncestors(allowedOrigins?: string): string {
+  const origins = (allowedOrigins ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0 && o !== '*' && o !== 'same-origin')
+  return ["'self'", ...origins].join(' ')
+}
+
 // Content Security Policy for module workers, jq (engine/jq.ts), and inline styles.
 // The jq backend is the jq-web WASM build: 'wasm-unsafe-eval' covers the
 // WebAssembly instantiation in the worker, and the binary is same-origin
@@ -17,7 +35,7 @@ const csp = [
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
-  "frame-ancestors 'self'", // Allow embedding in same origin
+  `frame-ancestors ${frameAncestors(process.env['VITE_HANDOVER_ALLOWED_ORIGINS'])}`,
 ].join('; ')
 
 export default defineNuxtConfig({
@@ -76,7 +94,9 @@ export default defineNuxtConfig({
           'Content-Security-Policy': csp,
           'Referrer-Policy': 'no-referrer',
           'X-Content-Type-Options': 'nosniff',
-          'X-Frame-Options': 'DENY',
+          // NB: no X-Frame-Options — CSP frame-ancestors (above) is the
+          // single framing policy; XFO would contradict the documented
+          // embedding support (and is ignored when frame-ancestors exists).
           'X-XSS-Protection': '1; mode=block',
         },
       },

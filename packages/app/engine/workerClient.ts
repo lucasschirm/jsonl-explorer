@@ -129,6 +129,19 @@ export class WorkerClient implements JsonlEngine {
   private fatal = false
   private initInFlight = false
   private currentOperationId: string | null = null
+  /** Loads attempted on this client (session counter for replay safety). */
+  private loadCount = 0
+  /**
+   * Last TERMINAL view event (index/filter/edit complete) and the load
+   * count when it was emitted. Component-level stores subscribe lazily
+   * (the explorer panel mounts only once a file exists); for fast loads
+   * (e.g. a small `?url=` file) the index commits BEFORE the panel
+   * mounts, so those stores would otherwise miss the event and render an
+   * empty view. `onProgress` replays the stored event to late
+   * subscribers — but only when the session is unchanged (same load
+   * count), so a stale event can never describe a newer source.
+   */
+  private lastViewEvent: { event: EngineEvent; loadCount: number } | null = null
 
   constructor(options: WorkerClientOptions = {}) {
     this.options = options
@@ -164,6 +177,10 @@ export class WorkerClient implements JsonlEngine {
     }
     if (this.initInFlight) return Promise.reject(new InitInProgressError())
     this.initInFlight = true
+    // New session: any stored terminal view event belongs to the outgoing
+    // source and must never be replayed into the new one.
+    this.loadCount += 1
+    this.lastViewEvent = null
     // Any in-flight RPC belongs to the outgoing source: its result would be
     // stale the moment the new source exists.
     this.rejectPending(new SourceReplacedError())
@@ -310,6 +327,7 @@ export class WorkerClient implements JsonlEngine {
     this.fatal = false
     this.initInFlight = false
     this.currentOperationId = null
+    this.lastViewEvent = null
     if (worker) worker.terminate()
   }
 
@@ -317,6 +335,12 @@ export class WorkerClient implements JsonlEngine {
 
   onProgress(callback: (event: EngineEvent) => void): () => void {
     this.progressSubs.add(callback)
+    const replay = this.lastViewEvent
+    if (replay && replay.loadCount === this.loadCount && !this.fatal) {
+      // Microtask: see the lastViewEvent doc (must not run before the
+      // caller's synchronous store-setup/reset sequence completes).
+      queueMicrotask(() => callback(replay.event))
+    }
     return () => this.progressSubs.delete(callback)
   }
 
@@ -392,7 +416,15 @@ export class WorkerClient implements JsonlEngine {
       }
       return
     }
-    for (const callback of this.progressSubs) callback(msg as EngineEvent)
+    const event = msg as EngineEvent
+    if (
+      event.type === 'indexComplete' ||
+      event.type === 'filterComplete' ||
+      event.type === 'editComplete'
+    ) {
+      this.lastViewEvent = { event, loadCount: this.loadCount }
+    }
+    for (const callback of this.progressSubs) callback(event)
   }
 
   private async routeFallbackConfirm(request: UrlFallbackConfirmRequest): Promise<void> {

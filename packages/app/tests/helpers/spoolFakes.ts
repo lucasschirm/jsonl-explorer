@@ -50,9 +50,18 @@ export class FakeFileHandle {
     this.quotaLimit = quotaLimit
   }
 
-  async createWritable() {
+  /**
+   * Faithful to real OPFS semantics: writes are STAGED on the writable
+   * and only become visible through getFile() once the writable is
+   * CLOSED. `keepExistingData: false` (the default) truncates the file
+   * on open. (The old fake committed writes immediately, which masked a
+   * real-browser bug where an unclosed writer hid streamed bytes from
+   * concurrent reads — TSK0039.)
+   */
+  async createWritable(options?: { keepExistingData?: boolean }) {
     let closed = false
     const self = this
+    let staged = options?.keepExistingData ? this.data : new Uint8Array(0)
     return {
       getWriter() {
         return {
@@ -60,16 +69,23 @@ export class FakeFileHandle {
             if (closed) throw new Error('Writer is closed')
             if (
               self.quotaLimit !== null &&
-              self.data.length + chunk.length > self.quotaLimit
+              staged.length + chunk.length > self.quotaLimit
             ) {
               throw new DOMException('Exceeded quota', 'QuotaExceededError')
             }
-            const next = new Uint8Array(self.data.length + chunk.length)
-            next.set(self.data, 0)
-            next.set(chunk, self.data.length)
-            self.data = next
+            const next = new Uint8Array(staged.length + chunk.length)
+            next.set(staged, 0)
+            next.set(chunk, staged.length)
+            staged = next
           },
           async close(): Promise<void> {
+            if (closed) return
+            closed = true
+            self.data = staged
+            self.closedWritables++
+          },
+          async abort(): Promise<void> {
+            if (closed) return
             closed = true
             self.closedWritables++
           },

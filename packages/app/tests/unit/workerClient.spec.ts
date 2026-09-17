@@ -318,4 +318,50 @@ describe('WorkerClient events and consent relay', () => {
       expect(reply.accept).toBe(false)
     })
   })
+
+  it('replays the last terminal view event to late subscribers, same session only', async () => {
+    // Regression (TSK0039): for fast loads (small ?url= file) the index
+    // commits BEFORE the explorer panel mounts, so component-level stores
+    // subscribe after the indexComplete dispatch and would render an
+    // empty view without a replay.
+    const workers: FakeWorker[] = []
+    const client = makeClient(workers)
+
+    const initPromise = client.initMemory('fast.jsonl', '{"a":1}\n')
+    const worker = workers[0]!
+    const initMessage = worker.last as { requestId: string; operationId?: string }
+    worker.emit(success(initMessage.requestId, { name: 'fast.jsonl', size: 8, type: 'handover' }))
+    await initPromise
+    worker.emit({
+      ns: PROTOCOL_NAMESPACE,
+      v: PROTOCOL_VERSION,
+      type: 'indexComplete',
+      operationId: initMessage.operationId ?? 'op-x',
+      totalRows: 1,
+      totalBytes: 8,
+      durationMs: 1,
+      generation: 1,
+    })
+
+    // Late subscriber (the panel mounting after the commit) gets the
+    // event — deferred to a microtask so it lands after the caller's
+    // synchronous store-setup/reset sequence.
+    const seen: number[] = []
+    client.onProgress((event) => {
+      if (event.type === 'indexComplete') seen.push(event.totalRows)
+    })
+    await Promise.resolve()
+    expect(seen).toEqual([1])
+
+    // A NEW load starts a new session: the stale event is not replayed.
+    const init2 = client.initMemory('second.jsonl', '{"b":2}\n')
+    worker.emit(success(worker.last.requestId!, { name: 'second.jsonl', size: 8, type: 'handover' }))
+    await init2
+    const seen2: number[] = []
+    client.onProgress((event) => {
+      if (event.type === 'indexComplete') seen2.push(event.totalRows)
+    })
+    await Promise.resolve()
+    expect(seen2).toEqual([])
+  })
 })

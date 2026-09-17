@@ -156,6 +156,31 @@ describe('OpfsSpool', () => {
     await spool.dispose()
   })
 
+  it('mid-stream reads see every appended byte (close-per-append contract)', async () => {
+    // Regression (TSK0039): real OPFS only exposes CLOSED writes through
+    // getFile(). The indexer reads via readRange WHILE the URL download
+    // streams — if appends kept a long-lived writer, every read would see
+    // an empty file and the incremental index would loop forever.
+    const { root } = makeFakeStorage()
+    const spool = await OpfsSpool.create('spool-midstream.jsonl', {
+      rootDirectory: root as unknown as FileSystemDirectoryHandle,
+    })
+    const chunks = splitBytes(patternBytes(1000), [333, 333, 334])
+    let offset = 0n
+    for (const chunk of chunks) {
+      await spool.append(chunk)
+      // Read immediately, before any seal: the bytes must be visible.
+      expect(await spool.getSize()).toBe(offset + BigInt(chunk.length))
+      expect(
+        bytesEqual(await spool.readRange(offset, chunk.length), chunk),
+      ).toBe(true)
+      offset += BigInt(chunk.length)
+    }
+    // keepExistingData must preserve prior content across append cycles.
+    expect(bytesEqual(await spool.readRange(0, 1000), patternBytes(1000))).toBe(true)
+    await spool.dispose()
+  })
+
   it('clamps reads at EOF and returns empty beyond size', async () => {
     const { root } = makeFakeStorage()
     const spool = await OpfsSpool.create('spool-clamp.jsonl', {

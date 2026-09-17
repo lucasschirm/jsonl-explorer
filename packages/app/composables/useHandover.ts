@@ -14,9 +14,11 @@
  * Behavior contract:
  * - The listener is installed BEFORE `ready` is posted (a fast host may
  *   post `load` the instant it sees `ready`).
- * - One session per page visit: the first accepted load takes ownership;
- *   duplicate loads are ignored silently (an error reply would make a
- *   well-meaning retry look like a failure).
+ * - One session per page visit: the first SUCCESSFUL load takes ownership
+ *   for good; further loads (even after completion) are ignored silently
+ *   (an error reply would make a well-meaning retry look like a
+ *   failure). A FAILED load takes no ownership, so the host may retry
+ *   within the window.
  * - `load` must arrive within `readyTimeoutMs` (30 s) of `ready`; after
  *   the timeout the receiver is disarmed and the page stays usable
  *   (drop zone) — the host times out on its side.
@@ -88,8 +90,9 @@ export function useHandover(options: HandoverOptions = {}): {
   const config = getHandoverConfig()
   let host: Window | null = null
   let allowedOrigins: string[] = []
-  let acceptedName: string | null = null
+  let acceptedName: string | null = null // in-flight load (drives the reply)
   let acceptedOrigin: string | null = null
+  let ownershipTaken = false // settled session (survives the reply)
   let listenerInstalled = false
   let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -110,8 +113,11 @@ export function useHandover(options: HandoverOptions = {}): {
     if (data.type !== 'load') return
     // Trust boundary: exact origin AND exact host window identity.
     if (!isTrustedLoadEvent(event, host, allowedOrigins)) return
-    // Ownership: the first accepted load wins; duplicates are ignored.
-    if (acceptedName !== null) return
+    // Ownership: a load already in flight, or a session already settled,
+    // wins — duplicates are ignored (in flight: the first load owns the
+    // engine; settled: the file is already showing, re-loading it would
+    // be surprising and would race the user's own session).
+    if (acceptedName !== null || ownershipTaken) return
     // Malformed per the shared contract (empty name, wrong payload type):
     // validateLoadMessage already required a usable shape for the type
     // guard above to be meaningful — enforce it here, at the boundary.
@@ -140,7 +146,9 @@ export function useHandover(options: HandoverOptions = {}): {
   async function acceptLoad(data: HandoverLoadMessage, origin: string): Promise<void> {
     try {
       await fileStore.loadFromHandover(data.name, data.payload)
-      // Ownership is settled: the timeout no longer disarms the reply path.
+      // Ownership is settled: the timeout no longer disarms the reply
+      // path, and no further load from the host is ever accepted.
+      ownershipTaken = true
       if (timer !== null) {
         clearTimeout(timer)
         timer = null

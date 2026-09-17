@@ -18,7 +18,10 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'pnpm exec nuxi preview --port 4173',
+    // The real nitro server, fronted with same-origin /e2e-host/*
+    // fixtures (nitro only serves public files that existed at build
+    // time — the front server closes that gap without touching the app).
+    command: 'node scripts/e2e-server.mjs',
     url: 'http://localhost:4173',
     reuseExistingServer: !process.env["CI"],
     timeout: 120_000,
