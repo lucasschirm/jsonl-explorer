@@ -221,6 +221,22 @@ export class WorkerClient implements JsonlEngine {
     return await this.postRequest({ type: 'linePosition', lineId })
   }
 
+  /** Run a jq program against one document (local search, TSK0033).
+   *  The worker executes `text` as sent — staleness is the caller's
+   *  concern (row id + text snapshot), not the worker's. */
+  async runJq(options: {
+    lineId: number
+    program: string
+    text: string
+  }): Promise<{ lineId: number; outputs: unknown[] }> {
+    return await this.postRequest<{ lineId: number; outputs: unknown[] }>({
+      type: 'runJq',
+      lineId: options.lineId,
+      program: options.program,
+      text: options.text,
+    })
+  }
+
   async setEdit(
     lineId: number,
     text?: string,

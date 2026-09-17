@@ -18,13 +18,16 @@ import { useEditsStore } from '~/stores/edits'
 import { ENGINE_DEFAULTS } from '~/engine/config/adr'
 import { formatBytes, serializeFormatted, serializeCompact } from '~/utils/jsonTree'
 import JsonTree from '~/components/explorer/JsonTree.vue'
+import DetailSearch from '~/components/explorer/DetailSearch.vue'
 import RawModal from '~/components/explorer/RawModal.vue'
+import { useDetailSearchStore } from '~/stores/detailSearch'
 import { useToastStore } from '~/stores/toasts'
 import { copyText } from '~/utils/clipboard'
 
 const detailStore = useDetailStore()
 const toastStore = useToastStore()
 const editsStore = useEditsStore()
+const searchStore = useDetailSearchStore()
 
 /** The active row carries a worker-accepted override (enables Reset). */
 const isLineEdited = computed(
@@ -187,9 +190,21 @@ function confirmTree(): void {
     </div>
 
     <!-- Ready: one of tree / invalid-raw / large-raw -->
-    <div v-else class="flex-1 overflow-auto p-4">
-      <!-- Valid JSON: the collapsible tree -->
-      <JsonTree v-if="showTree" :value="detailStore.parsed!.value!" />
+    <div v-else class="flex-1 overflow-auto">
+      <!-- Local document search (TSK0033): tree rows only — it searches
+           the SELECTED document, never the whole file (independent of
+           the left-side filter). Pinned above the scrolling content. -->
+      <DetailSearch v-if="showTree" class="sticky top-0 z-10" />
+
+      <div class="p-4">
+      <!-- Valid JSON: the collapsible tree (+ local-search highlights) -->
+      <JsonTree
+        v-if="showTree"
+        :value="detailStore.parsed!.value!"
+        :match-keys="searchStore.matchKeys"
+        :current-key="searchStore.currentKey"
+        :expand-keys="searchStore.expandKeys"
+      />
 
       <!-- Invalid JSON: read mode (banner + raw text + Edit) or the
            explicit raw editor (Save/Cancel; no implicit commits). -->
@@ -275,6 +290,7 @@ function confirmTree(): void {
         </div>
         <pre class="whitespace-pre-wrap break-all font-mono text-sm bg-base-200 rounded p-3 max-h-96 overflow-auto" data-testid="detail-raw">{{ detailStore.text }}</pre>
       </template>
+      </div>
     </div>
   </section>
 

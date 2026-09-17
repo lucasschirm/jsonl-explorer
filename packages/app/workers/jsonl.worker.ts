@@ -26,6 +26,7 @@ import type {
   GetRowsRequest,
   GetLineRequest,
   LinePositionRequest,
+  RunJqRequest,
   SetEditRequest,
   ExportStartRequest,
   ExportNextRequest,
@@ -69,7 +70,7 @@ import { IndexAbortedError, JsonlScanner } from '../engine/scanner.js'
 import type { ScanProgress, ScanResult } from '../engine/scanner.js'
 import { FilterCancelledError, FilterEngine } from '../engine/filter.js'
 import type { FilterEngineOptions } from '../engine/filter.js'
-import { getJqRuntime } from '../engine/jq.js'
+import { getJqRuntime, isJqParseError, jqErrorText } from '../engine/jq.js'
 import type { JqRuntimeLike } from '../engine/jq.js'
 import { offsetToNumber } from '../engine/indexer.js'
 import { ENGINE_DEFAULTS } from '../engine/config/adr.js'
@@ -391,6 +392,8 @@ const jqRuntime: JqRuntimeLike = {
   compile: (query) => getJqRuntime().then((runtime) => runtime.compile(query)),
   runVerdicts: (program, rows, isAborted) =>
     getJqRuntime().then((runtime) => runtime.runVerdicts(program, rows, isAborted)),
+  runOutputs: (program, text) =>
+    getJqRuntime().then((runtime) => runtime.runOutputs(program, text)),
 }
 
 const filterEngineOptions: FilterEngineOptions = {
@@ -510,6 +513,10 @@ self.onmessage = async (event: MessageEvent) => {
       }
       case 'linePosition': {
         await handleLinePosition(request)
+        break
+      }
+      case 'runJq': {
+        await handleRunJq(request)
         break
       }
       case 'setEdit': {
@@ -952,6 +959,44 @@ async function handleGetLine(request: GetLineRequest): Promise<void> {
     isEdited: override !== undefined,
   })
   self.postMessage(response)
+}
+
+/**
+ * Local jq search (TSK0033): run the program against ONE document — the
+ * selected row, sent by value (the worker executes what it is sent; the
+ * caller's lineId/generation guard staleness on their side).
+ * Malformed input is rejected BEFORE it can reach jq (a malformed input
+ * silently kills the module — the same rule as runVerdicts); parse and
+ * runtime errors come back as typed errors, never silent failures.
+ */
+async function handleRunJq(request: RunJqRequest): Promise<void> {
+  try {
+    JSON.parse(request.text)
+  } catch {
+    self.postMessage(
+      createErrorResponse(
+        request.requestId,
+        'INVALID_JSON',
+        'The document is not valid JSON, so the jq program was not executed.',
+      ),
+    )
+    return
+  }
+  try {
+    const runtime = await getJqRuntime()
+    const outputs = await runtime.runOutputs(request.program, request.text)
+    self.postMessage(createSuccessResponse(request.requestId, { lineId: request.lineId, outputs }))
+  } catch (error) {
+    const message = jqErrorText(error)
+    const isCompile = isJqParseError(error)
+    self.postMessage(
+      createErrorResponse(
+        request.requestId,
+        isCompile ? 'JQ_COMPILE_FAILED' : 'JQ_RUNTIME_ERROR',
+        isCompile ? `The jq program does not parse: ${message}` : `jq failed on this document: ${message}`,
+      ),
+    )
+  }
 }
 
 /** UTF-8 byte length of an override (mirrors the on-disk row length - 1). */

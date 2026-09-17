@@ -8,11 +8,32 @@
 import type { JsonValue } from '~/utils/jsonTree'
 import JsonNode from '~/components/explorer/JsonNode.vue'
 
-defineProps<{ value: JsonValue }>()
+/**
+ * Optional local-search props (TSK0033): when the right-toolbar text
+ * search is active, `matchKeys`/`currentKey` highlight the matching nodes
+ * and `expandKeys` auto-expands the containers holding the current match.
+ * Absent = plain read-only tree (no search state at all).
+ */
+withDefaults(
+  defineProps<{
+    value: JsonValue
+    matchKeys?: Set<string>
+    currentKey?: string | null
+    expandKeys?: Set<string>
+  }>(),
+  { matchKeys: () => new Set<string>(), currentKey: null, expandKeys: () => new Set<string>() },
+)
 </script>
 
 <template>
   <div class="font-mono text-sm overflow-auto" data-testid="json-tree">
-    <JsonNode :value="value" :key-name="null" :depth="0" />
+    <JsonNode
+      :value="value"
+      :key-name="null"
+      :depth="0"
+      :match-keys="matchKeys"
+      :current-key="currentKey"
+      :expand-keys="expandKeys"
+    />
   </div>
 </template>

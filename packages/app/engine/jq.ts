@@ -86,6 +86,14 @@ export interface JqRuntimeLike {
     rows: string[],
     isAborted: () => boolean,
   ): Promise<JqVerdicts>
+  /**
+   * Runs the program against ONE JSON document and returns every output
+   * in emission order (may be empty). Unlike runVerdicts the program is
+   * NOT verdict-wrapped — local jq search shows the raw outputs. A parse
+   * or runtime error propagates to the caller (classify with
+   * isJqParseError / jqErrorText).
+   */
+  runOutputs(program: string, text: string): Promise<unknown[]>
 }
 
 /** Typed user-facing error: the jq filter does not parse. */
@@ -224,6 +232,18 @@ export class JqRuntime implements JqRuntimeLike {
       }
     }
     return { verdicts, errorRows, errorCount, firstError }
+  }
+
+  /**
+   * Single-document execution (local jq search, TSK0033): one compact
+   * output line per result, parsed back into values. The input is
+   * expected to be validated JSON (the caller guards it — malformed input
+   * silently kills the module, same rule as runVerdicts).
+   */
+  async runOutputs(program: string, text: string): Promise<unknown[]> {
+    const out = this.jq.raw(text, program, ['-c'])
+    if (out === '') return []
+    return out.split('\n').map((line) => JSON.parse(line))
   }
 
   /**

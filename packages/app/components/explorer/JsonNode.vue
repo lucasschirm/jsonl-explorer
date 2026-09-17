@@ -16,10 +16,11 @@
  * document re-serialized compactly, one setEdit), Escape cancels. The
  * chevron stays purely expand/collapse.
  */
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { JsonValue } from '~/utils/jsonTree'
 import { isArray, childCount, isContainer, objectKeys } from '~/utils/jsonTree'
 import type { EditPath } from '~/utils/jsonEdit'
+import { pathKey as toPathKey } from '~/utils/detailSearch'
 import { useDetailStore } from '~/stores/detail'
 
 const props = withDefaults(
@@ -33,8 +34,22 @@ const props = withDefaults(
     depth?: number
     /** Path from the document root to THIS node (parents only). */
     path?: EditPath
+    /** Local-search (TSK0033): path keys of all current text matches. */
+    matchKeys?: Set<string>
+    /** Local-search: path key of the match navigation points at. */
+    currentKey?: string | null
+    /** Local-search: ancestor keys to auto-expand for the current match. */
+    expandKeys?: Set<string>
   }>(),
-  { keyName: null, isArrayEntry: false, depth: 0, path: () => [] },
+  {
+    keyName: null,
+    isArrayEntry: false,
+    depth: 0,
+    path: () => [],
+    matchKeys: () => new Set<string>(),
+    currentKey: null,
+    expandKeys: () => new Set<string>(),
+  },
 )
 
 const detailStore = useDetailStore()
@@ -46,6 +61,18 @@ const nodePath = computed<EditPath>(() => {
   if (props.keyName === null) return []
   const segment = props.isArrayEntry ? Number(props.keyName) : props.keyName
   return [...props.path, segment]
+})
+
+/** Local-search highlighting (TSK0033): this node's path identity. */
+const selfKey = computed(() => toPathKey(nodePath.value))
+const isMatch = computed(() => props.matchKeys.has(selfKey.value))
+const isCurrent = computed(() => props.currentKey !== null && props.currentKey === selfKey.value)
+
+/** Scroll the current match into view once navigation moves to it. */
+const rowEl = ref<HTMLElement | null>(null)
+watch(isCurrent, (now) => {
+  if (!now) return
+  void nextTick(() => rowEl.value?.scrollIntoView({ block: 'nearest' }))
 })
 
 /** True while this node is the one in the inline editor. */
@@ -76,7 +103,19 @@ function beginEdit(): void {
 /** Containers with more children than this start collapsed. */
 const COLLAPSE_ABOVE = 50
 
-const expanded = ref(!isContainer(props.value) || childCount(props.value) <= COLLAPSE_ABOVE)
+const expanded = ref(
+  !isContainer(props.value) ||
+    childCount(props.value) <= COLLAPSE_ABOVE ||
+    props.expandKeys.has(selfKey.value),
+)
+/** Search navigation may point INSIDE a collapsed container: open it.
+ *  (One-way: the user can still collapse it again afterwards. */
+watch(
+  () => props.expandKeys,
+  (keys) => {
+    if (keys.has(selfKey.value)) expanded.value = true
+  },
+)
 
 const isArr = computed(() => isArray(props.value))
 const count = computed(() => childCount(props.value))
@@ -114,13 +153,18 @@ function primitiveToken(value: JsonValue): string {
 </script>
 
 <template>
-  <div :data-depth="depth">
+  <div :data-depth="depth" ref="rowEl">
     <div class="flex items-start gap-1 leading-6">
-      <!-- Key / array index (not at the document root) -->
+      <!-- Key / array index (not at the document root). Local search
+           (TSK0033) highlights matching keys/values and the current one. -->
       <span
         v-if="keyName !== null"
         class="shrink-0 break-all"
-        :class="isArrayEntry ? 'font-mono text-base-content/50' : 'font-medium text-primary'"
+        :class="[
+          isArrayEntry ? 'font-mono text-base-content/50' : 'font-medium text-primary',
+          isMatch ? 'bg-warning/30 rounded-sm' : '',
+          isCurrent ? 'bg-warning/60 rounded-sm' : '',
+        ]"
       >
         {{ keyName }}
         <span v-if="!isArrayEntry" class="text-base-content/50">:</span>
@@ -192,7 +236,11 @@ function primitiveToken(value: JsonValue): string {
         v-else
         type="button"
         class="break-all p-0 bg-transparent text-left cursor-text hover:underline decoration-dotted underline-offset-2"
-        :class="tokenClass(value)"
+        :class="[
+          tokenClass(value),
+          isMatch ? 'bg-warning/30 rounded-sm' : '',
+          isCurrent ? 'bg-warning/60 rounded-sm' : '',
+        ]"
         :data-token="typeof value === 'string' ? 'string' : value === null ? 'null' : String(typeof value)"
         :data-testid="`json-edit-${keyName ?? 'root'}-${depth}`"
         title="Edit this value"
@@ -212,6 +260,9 @@ function primitiveToken(value: JsonValue): string {
         :is-array-entry="isArr"
         :depth="depth + 1"
         :path="nodePath"
+        :match-keys="matchKeys"
+        :current-key="currentKey"
+        :expand-keys="expandKeys"
       />
       <span class="block pl-5 text-base-content/70">{{ isArr ? ']' : '}' }}</span>
     </div>

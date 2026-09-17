@@ -144,6 +144,37 @@ describe('Worker RPC Protocol', () => {
     })
   })
 
+  describe('runJq (TSK0033 local jq search)', () => {
+    it('validates a runJq request (document sent by value, no generation)', () => {
+      const request = {
+        ns: 'jsonl-explorer',
+        v: 1,
+        type: 'runJq',
+        requestId: 'req-jq',
+        lineId: 3,
+        program: '.items[].id',
+        text: '{"items":[{"id":1}]}',
+      } satisfies import('../src/protocol.js').RunJqRequest
+      expect(validateWorkerRequest(request)).toBe(true)
+      // Staleness is caller-guarded: the request carries no generation.
+      expect('generation' in request).toBe(false)
+    })
+
+    it('validates a runJq success response (outputs in emission order)', () => {
+      const response = {
+        ns: 'jsonl-explorer',
+        v: 1,
+        type: 'runJq',
+        requestId: 'req-jq',
+        ok: true,
+        value: { lineId: 3, outputs: [1, 2] },
+      } satisfies RpcResponse<import('../src/protocol.js').RunJqResponse['value']>
+      expect(validateWorkerResponse(response)).toBe(true)
+      const success = createSuccessResponse(response.requestId, { lineId: 3, outputs: [] })
+      expect(isSuccessResponse(success)).toBe(true)
+    })
+  })
+
   describe('validateProgressEvent', () => {
     it('should accept valid progress event', () => {
       expect(validateProgressEvent({

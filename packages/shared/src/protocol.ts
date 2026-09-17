@@ -467,6 +467,31 @@ export interface LinePositionResponse extends BaseResponse {
 // Editing
 // ============================================================================
 
+/**
+ * Run a jq program against ONE document (the selected row, TSK0033).
+ * The worker owns the jq backend; the document travels by value (bounded
+ * by a single row). The worker executes what it is sent — it never
+ * re-reads the row — so STALENESS IS THE CALLER'S CONCERN: the caller
+ * snapshots the row id + text at send time and discards any answer that
+ * no longer refers to the current document.
+ */
+export interface RunJqRequest extends BaseRequest {
+  type: 'runJq'
+  lineId: number
+  program: string
+  /** The document's current effective text (valid JSON expected). */
+  text: string
+}
+
+export interface RunJqResponse extends BaseResponse {
+  ok: true
+  value: {
+    lineId: number
+    /** Every output in jq emission order (may be empty). */
+    outputs: unknown[]
+  }
+}
+
 export interface SetEditRequest extends BaseRequest {
   type: 'setEdit'
   lineId: number
@@ -562,6 +587,7 @@ export type WorkerRequest =
   | GetRowsRequest
   | GetLineRequest
   | LinePositionRequest
+  | RunJqRequest
   | SetEditRequest
   | ExportStartRequest
   | ExportNextRequest
@@ -578,6 +604,7 @@ export type WorkerResponse =
   | RpcResponse<GetRowsResponse['value']>
   | RpcResponse<GetLineResponse['value']>
   | RpcResponse<LinePositionResponse['value']>
+  | RpcResponse<RunJqResponse['value']>
   | RpcResponse<SetEditResponse['value']>
   | RpcResponse<ExportStartResponse['value']>
   | RpcResponse<ExportNextResponse['value']>
@@ -704,6 +731,12 @@ export interface JsonlEngine {
    * Used for selection transitions — the main thread never guesses.
    */
   linePosition(lineId: number): Promise<{ lineId: number; visible: boolean; displayIndex: number | null; generation: number }>
+  /**
+   * Run a jq program against ONE document (local jq search, TSK0033).
+   * The worker executes `text` as sent; staleness is the caller's concern
+   * (row id + text snapshot at send time).
+   */
+  runJq(options: { lineId: number; program: string; text: string }): Promise<{ lineId: number; outputs: unknown[] }>
   setEdit(lineId: number, text?: string): Promise<{ lineId: number; isEdited: boolean; newGeneration: number; filteredIndex?: number }>
   exportStart(options: { generation: number }): Promise<{ token: string; estimatedBytes: number; totalRows: number }>
   exportNext(token: string): Promise<{ data: Uint8Array; done: boolean; rowsExported: number }>

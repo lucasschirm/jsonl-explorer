@@ -276,7 +276,10 @@ describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {
 
     const pending = engine.filter('text', 'zz-absent')
     const rejected = expect(pending).rejects.toThrow(FilterCancelledError)
-    await new Promise((r) => setTimeout(r, 5)) // let the new scan start
+    // Let the new scan spin a few rows. The margin is deliberate: the
+    // minimum scan duration here is ~1500 x 0.5ms = 750ms, so a cancel
+    // within this window always lands mid-scan (cooperative check).
+    await new Promise((r) => setTimeout(r, 25))
     engine.cancel()
     await rejected
 
@@ -445,6 +448,11 @@ describe('FilterEngine jq row-error summary + clear (TSK0028)', () => {
         }
         return { verdicts, errorRows, errorCount, firstError }
       },
+      // The filter engine never calls runOutputs (that is the local
+      // search path, TSK0033) — a stub that fails loudly if it ever does.
+      runOutputs: async () => {
+        throw new Error('runOutputs is not used by the filter engine')
+      },
     } satisfies JqRuntimeLike
   }
 
@@ -562,6 +570,9 @@ describe('FilterEngine.applyEdit single-row re-evaluation (TSK0030)', () => {
           if (errorCount > 0) firstError = 'Invalid JSON (row is not a JSON value)'
           return { verdicts, errorRows, errorCount, firstError }
         },
+        runOutputs: async () => {
+          throw new Error('runOutputs is not used by the filter engine')
+        },
       } satisfies JqRuntimeLike,
     })
     return { engine, layout }
@@ -658,6 +669,9 @@ describe('FilterEngine.applyEdit single-row re-evaluation (TSK0030)', () => {
           }
         })
         return { verdicts, errorRows: verdicts.map((v) => v === false), errorCount: 0 }
+      },
+      runOutputs: async () => {
+        throw new Error('runOutputs is not used by the filter engine')
       },
     }
     const engine = new FilterEngine(layout.indexer, { readRange }, {
