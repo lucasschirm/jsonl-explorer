@@ -77,6 +77,7 @@ Use the PR template checklist. Before requesting review:
   internal links; screenshots are captured by `pnpm screenshots` (deterministic
   fixtures — do not hand-edit `public/screenshots/`).
 - Perf baselines and budgets: `docs/perf-baselines.md`.
+- npm releases (tag flow, rollback/deprecation): `docs/releasing.md`.
 - Architecture decisions: `packages/app/engine/config/adr.ts`.
 - Worker protocol: `packages/shared/src/protocol.ts` (+ the in-app engine
   types). Handover (postMessage) protocol: `packages/shared/src/handover.ts`.

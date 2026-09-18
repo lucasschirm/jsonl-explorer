@@ -17,7 +17,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -136,6 +136,29 @@ describe('packed CLI: help/version/inputs', () => {
     expect(r.code).toBe(0)
     expect(r.stdout.trim()).toBe('0.0.0')
   }, 30_000)
+
+  it('packed manifest: bin, site, license, engines, zero runtime deps', () => {
+    // Acceptance (TSK0056): the published package must expose the correct
+    // executable, the staged site, license/notices, engines, and ZERO
+    // runtime dependencies — asserted against the installed artifact.
+    const pkgPath = join(proj, 'node_modules', 'jsonlex', 'package.json')
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+      name: string
+      license: string
+      engines: { node: string }
+      dependencies?: Record<string, string>
+      bin: Record<string, string>
+    }
+    expect(pkg.name).toBe('jsonlex')
+    expect(pkg.license).toBe('MIT')
+    expect(pkg.engines.node).toBe('>=20.11.0')
+    expect(pkg.dependencies).toBeUndefined()
+    expect(pkg.bin).toEqual({ jsonlex: './dist/index.mjs' })
+    const root = join(proj, 'node_modules', 'jsonlex')
+    expect(existsSync(join(root, 'dist', 'index.mjs'))).toBe(true) // executable
+    expect(existsSync(join(root, 'site', 'index.html'))).toBe(true) // staged site
+    expect(existsSync(join(root, 'LICENSE'))).toBe(true) // license text shipped
+  })
 
   it('missing file argument: exit 1, actionable', () => {
     const r = runCli([])

@@ -59,7 +59,7 @@ pnpm gate         # the full local gate: lint, typecheck, docs, credits,
 │  │                          # production finalize/validate, post-deploy smoke
 │  ├─ cli/                    # jsonlex — fastify server + bundled site (tsup)
 │  └─ shared/                 # handover protocol + CSP source of truth
-├─ docs/                      # internal notes (perf baselines)
+├─ docs/                      # internal notes (perf baselines, release procedure)
 └─ .github/workflows/         # ci.yml, ci-scheduled.yml, deploy.yml
 ```
 
@@ -223,6 +223,15 @@ Cache/security model on Pages: hashed `/_nuxt/*` assets are immutable
 (1 year); HTML + the content API revalidate (`no-store`); every response
 carries the app CSP, `Referrer-Policy: no-referrer`, and
 `X-Content-Type-Options: nosniff`.
+
+## Releases
+
+The CLI is published to npm as `jsonlex` **only from version tags** by a
+release workflow that can never run from branches or PRs (OIDC trusted
+publishing + provenance, no tokens, immutable-version check, full gate,
+post-publish `npx` smoke) — see
+[`docs/releasing.md`](docs/releasing.md) for the tag flow and the
+rollback/deprecation procedure.
 
 ## License
 
