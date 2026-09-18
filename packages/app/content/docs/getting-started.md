@@ -67,13 +67,13 @@ Headers that look like credentials (e.g. `Authorization`) are masked by default 
 - Local files are indexed in the background: you can enter the explorer immediately and rows appear as they are committed.
 - **Cancel** targets the active operation only (its operation id); stale progress events from a previous operation are dropped, so a cancel or restart can never surface outdated percentages.
 - After a cancelled or failed load you stay on landing with the form intact — retry in place.
-- If the local disk cache (OPFS) is unavailable or its quota is exceeded, you are asked before the download falls back to **memory-only** pages: the dialog explains the trade-off (higher RAM use, no disk persistence, data lost on tab close) and you can cancel instead.
+- If the local disk cache (OPFS) is unavailable or its quota is exceeded, the download falls back to **memory-only** pages. You are **asked first** whenever the response size is unknown (chunked transfer) or above 100 MiB — the dialog explains the trade-off (higher RAM use, no disk persistence, data lost on tab close) and you can cancel instead. Small files with a declared size fall back without prompting; a mid-stream quota failure always asks before re-fetching into memory.
 
 ## Supported Formats
 
-- **JSONL** (`.jsonl`, `.ndjson`) — One JSON object per line
-- **JSON** (`.json`) — Arrays or newline-delimited objects
-- **Text** (`.txt`) — Any text file with JSONL content
+- **JSONL** (`.jsonl`, `.ndjson`) — one JSON value per line (objects are the common case)
+- **JSON** (`.json`) — read line-by-line, exactly like JSONL: one JSON value per line. A compact single-line array loads as ONE row (the array itself); pretty-printed multi-line arrays are not parsed as arrays
+- **Text** (`.txt`) — any text file, one record per line
 
 ## Next Steps
 

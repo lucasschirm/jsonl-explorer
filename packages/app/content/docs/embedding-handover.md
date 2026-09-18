@@ -107,19 +107,44 @@ This is simpler but doesn't support custom headers.
 
 ## CSP & Sandbox
 
-If embedding in an iframe with CSP/sandbox, ensure:
+The explorer ships its own `Content-Security-Policy` header, so you do not
+set one from the host page (an iframe's CSP cannot be set via an attribute):
+
+```text
+default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline';
+style-src 'self' 'unsafe-inline'; worker-src 'self' blob:;
+connect-src 'self' https:; font-src 'self' data:; img-src 'self' data:;
+object-src 'none'; base-uri 'self'; form-action 'self';
+frame-ancestors <handover allowlist>
+```
+
+The parts that matter for embedding:
+- `frame-ancestors` — the ONLY framing policy (built from the same
+  `VITE_HANDOVER_ALLOWED_ORIGINS` allowlist). An origin not on the
+  allowlist gets a browser-level refusal to load the iframe at all.
+- `worker-src 'self' blob:` — the Web Worker that indexes/filters/exports.
+- `connect-src 'self' https:` — URL loading is a same-page `fetch`.
+- `script-src … 'wasm-unsafe-eval'` — reserved for the WASM jq build.
+
+If you want to SANDBOX the iframe, keep at least these flags (dropping
+`allow-same-origin` changes the iframe's origin and breaks the postMessage
+origin check on both sides):
 
 ```html
 <iframe
   src="https://jsonlexplorer.lucasschirm.com/explorer"
   sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-  csp="script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https:;"
+  allow="clipboard-read clipboard-write"
 ></iframe>
 ```
 
-Required permissions:
 - `allow-scripts` — JavaScript execution
-- `allow-same-origin` — Origin preservation for postMessage
-- `allow-forms` — File input (if using file picker)
-- `allow-popups` — For any popup workflows
-- CSP: `wasm-unsafe-eval` for jq-web, `blob:` for workers
+- `allow-same-origin` — origin preservation for postMessage
+- `allow-forms` — the file picker (manual loads inside the frame)
+- `allow-popups` — `window.open` handover from inside the frame
+
+When SELF-HOSTING a build of the explorer, keep the same CSP directives in
+your server headers — especially `worker-src … blob:`, `connect-src` for
+the origins your users load, and `frame-ancestors` for the origins allowed
+to embed it (plus the matching `VITE_HANDOVER_ALLOWED_ORIGINS` at build
+time).
