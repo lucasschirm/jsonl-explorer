@@ -14,8 +14,10 @@
  *   large is committed — bodies are produced on demand):
  *     /e2e-fixture/jsonl?rows=N&delayMs=M[&gzip=1][&chunked=1][&lie-length=1]
  *       N JSONL rows; per-chunk delay; gzip content-encoding; chunked
- *       (no Content-Length); lie-length = gzip with the UNCOMPRESSED
- *       length advertised (misleading/buggy server case);
+ *       (no Content-Length); lie-length = the server advertises HALF the
+ *       real body size (a buggy/lying Content-Length — the client must
+ *       handle the truncated transfer without hanging; a LARGER lie would
+ *       stall the TCP transfer itself and is not representable);
  *     /e2e-fixture/headers — echoes selected request headers (JSON);
  *     /e2e-fixture/redirect?to=<url>&hops=N — N-hop 302 chain;
  *     /e2e-fixture/error?status=404|500 — typed error responses;
@@ -174,9 +176,10 @@ async function handleFixture(url, req, res) {
     const headers = { 'content-type': 'application/jsonl' }
     if (gzip) headers['content-encoding'] = 'gzip'
     if (!chunked) {
-      // lie-length: advertise the UNCOMPRESSED size while serving gzip —
-      // a buggy/misleading server (clients must not trust the length).
-      headers['content-length'] = lieLength ? plain.length : body.length
+      // lie-length: advertise HALF the real size — a buggy server. The
+      // client reads the first half and the connection closes; the app
+      // must index what arrived without hanging or erroring.
+      headers['content-length'] = lieLength ? Math.floor(body.length / 2) : body.length
     }
     res.writeHead(200, headers)
     if (body.length === 0) {

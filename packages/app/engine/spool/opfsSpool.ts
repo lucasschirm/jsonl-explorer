@@ -1,13 +1,24 @@
 /**
  * OpfsSpool — incremental OPFS byte spool for streamed URL data.
  *
- * Appends land in an OPFS artifact (`spool-<uuid>.jsonl` under the origin's
- * `navigator.storage` root) via a `FileSystemWritableFileStream`; random
- * reads go back through `getFile().slice()`, which OPFS serves efficiently
- * from disk. Quota exhaustion surfaces as a typed `SpoolQuotaExceededError`
- * so callers can fall back to paged memory (ADR-008).
+ * OPFS `createWritable({ keepExistingData: true })` does NOT append: it
+ * opens the file at offset 0 WITHOUT truncating, so a "close-per-append"
+ * cycle silently OVERWRITES the file's beginning (verified in Chromium:
+ * two such cycles leave only the last chunk on disk). Appending through
+ * a single long-lived writer is equally unusable: `getFile()` only
+ * reflects CLOSED writes, so concurrent reads would see an empty file.
  *
- * Disposal removes the artifact; it is idempotent and tolerant of
+ * The spool therefore writes a SEQUENCE OF IMMUTABLE PART FILES
+ * (`<artifact>-p<seq>`): each part is written exactly once
+ * (create → write → close) and is never touched again. Reads walk a
+ * small in-memory part table and slice each part through a CACHED
+ * `getFile()` (safe: closed parts are immutable). Bytes that have not
+ * filled a part yet live in a bounded in-RAM pending buffer and are
+ * served from RAM. Every `readRange(offset, len)` with
+ * `offset < getSize()` returns real bytes — the indexer's incremental
+ * feed never sees an empty window.
+ *
+ * Disposal removes every part; it is idempotent and tolerant of
  * not-found (crash cleanup leaves nothing behind).
  */
 
@@ -23,6 +34,20 @@ export interface OpfsSpoolOptions {
    * Injectable for tests.
    */
   rootDirectory?: FileSystemDirectoryHandle
+}
+
+/** One part file = 1 MiB: bounds the RAM pending buffer and keeps the
+ *  part count low (1024 parts per GiB) so dispose stays cheap. */
+export const OPFS_PART_SIZE_BYTES = 1024 * 1024
+
+interface Part {
+  handle: FileSystemFileHandle
+  /** Cached after first use; closed parts are immutable, so the snapshot
+   *  never goes stale. */
+  file: File | null
+  /** Start offset of the part in the logical stream. */
+  offset: number
+  size: number
 }
 
 /** Resolves the default OPFS root, rejecting when OPFS is unavailable. */
@@ -44,51 +69,65 @@ function mapQuotaError(error: unknown, artifactName: string): void {
   }
 }
 
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a, 0)
+  out.set(b, a.length)
+  return out
+}
+
+function concatAll(parts: Uint8Array[]): Uint8Array {
+  let total = 0
+  for (const p of parts) total += p.length
+  const out = new Uint8Array(total)
+  let pos = 0
+  for (const p of parts) {
+    out.set(p, pos)
+    pos += p.length
+  }
+  return out
+}
+
 export class OpfsSpool implements ByteSpool {
   readonly kind = 'opfs' as const
   readonly artifactName: string
   private readonly root: FileSystemDirectoryHandle
-  private readonly handle: FileSystemFileHandle
+  private readonly parts: Part[] = []
+  private partSeq = 0
+  /** In-flight bytes (< 1 part); served from RAM until flushed. */
+  private pending: Uint8Array = new Uint8Array(0)
   private size = 0n
   private sealed = false
   private disposed = false
 
-  private constructor(artifactName: string, root: FileSystemDirectoryHandle, handle: FileSystemFileHandle) {
+  private constructor(artifactName: string, root: FileSystemDirectoryHandle) {
     this.artifactName = artifactName
     this.root = root
-    this.handle = handle
   }
 
-  /** Creates (or reopens) the artifact and returns a ready spool. */
+  /** Creates a fresh spool session and returns a ready spool. */
   static async create(artifactName: string, options: OpfsSpoolOptions = {}): Promise<OpfsSpool> {
     const root = options.rootDirectory ?? (await defaultRoot())
-    const handle = await root.getFileHandle(artifactName, { create: true })
-    return new OpfsSpool(artifactName, root, handle)
+    return new OpfsSpool(artifactName, root)
   }
 
   async append(chunk: Uint8Array): Promise<void> {
     this.assertActive()
     if (this.sealed) throw new SpoolSealedError(this.artifactName)
     if (chunk.length === 0) return
-    // OPFS: getFile() only reflects CLOSED writes. A long-lived writer
-    // would therefore hide every streamed byte from concurrent reads
-    // (the indexer reads through readRange while the download streams —
-    // with an unclosed writer it would see an empty file forever).
-    // Each append is thus ONE complete writable cycle: create → write →
-    // close. `keepExistingData` preserves prior content across cycles;
-    // the on-disk file is current after every append, and only the
-    // in-flight chunk is held in RAM at a time.
-    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null
-    try {
-      const stream = await this.handle.createWritable({ keepExistingData: true })
-      writer = stream.getWriter()
-      await writer.write(chunk)
-      await writer.close()
-    } catch (error) {
-      await writer?.abort().catch(() => {})
-      mapQuotaError(error, this.artifactName)
-      throw error
+    let buffer = this.pending.length === 0 ? chunk : concat(this.pending, chunk)
+    let written = 0n // bytes flushed by THIS append (part offsets)
+    while (buffer.length >= OPFS_PART_SIZE_BYTES) {
+      const part = buffer.subarray(0, OPFS_PART_SIZE_BYTES)
+      await this.flushPart(part, this.size + written)
+      written += BigInt(part.length)
+      // Copy the remainder: releases the flushed bytes from memory.
+      buffer = buffer.slice(OPFS_PART_SIZE_BYTES)
     }
+    // Keep a private copy: the caller's fetch chunk may be reused/freed.
+    this.pending = this.pending.length === 0 && buffer === chunk ? chunk.slice() : buffer
+    // Commit the size only after every flush succeeded (a quota failure
+    // leaves the spool exactly as it was).
     this.size += BigInt(chunk.length)
   }
 
@@ -103,28 +142,68 @@ export class OpfsSpool implements ByteSpool {
     if (start >= this.size) return new Uint8Array(0)
     const requested = BigInt(normalizeLength(length))
     const end = start + requested < this.size ? start + requested : this.size
-    // Number conversion only at the Blob.slice boundary, after the
-    // safe-integer check (documents beyond 2^53 bytes are not addressable
-    // through Blob offsets regardless).
-    const file = await this.handle.getFile()
-    const blob = file.slice(offsetToNumber(start), offsetToNumber(end))
-    return new Uint8Array(await blob.arrayBuffer())
+
+    const out: Uint8Array[] = []
+    let pos = start
+    for (const part of this.parts) {
+      if (pos >= end) break
+      if (part.offset + part.size <= pos) continue
+      const from = pos > BigInt(part.offset) ? pos : BigInt(part.offset)
+      const to = end < BigInt(part.offset + part.size) ? end : BigInt(part.offset + part.size)
+      const file = (part.file ??= await part.handle.getFile())
+      // Number conversion only at the Blob.slice boundary (part-local
+      // offsets are < 1 MiB, always safe).
+      const blob = file.slice(Number(from - BigInt(part.offset)), Number(to - BigInt(part.offset)))
+      out.push(new Uint8Array(await blob.arrayBuffer()))
+      pos = to
+    }
+    if (pos < end) {
+      // The tail always lives in the RAM pending buffer.
+      const pendingStart = this.size - BigInt(this.pending.length)
+      const from = pos > pendingStart ? pos : pendingStart
+      out.push(this.pending.subarray(Number(from - pendingStart), Number(end - pendingStart)))
+    }
+    return concatAll(out)
   }
 
   async seal(): Promise<void> {
     this.assertActive()
-    // All appends already closed their writers: nothing to flush.
+    // Parts are already closed; the pending buffer stays readable in RAM.
     this.sealed = true
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
-    try {
-      await this.root.removeEntry(this.artifactName)
-    } catch {
-      // Already gone (crash cleanup, prior dispose): nothing to do.
+    this.pending = new Uint8Array(0)
+    for (const part of this.parts.splice(0)) {
+      try {
+        await this.root.removeEntry(part.handle.name)
+      } catch {
+        // Already gone (crash cleanup, prior dispose): nothing to do.
+      }
     }
+  }
+
+  /** Writes one full part file (exactly one writable cycle per part). */
+  private async flushPart(data: Uint8Array, offset: bigint): Promise<void> {
+    const name = `${this.artifactName}-p${this.partSeq++}`
+    const handle = await this.root.getFileHandle(name, { create: true })
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null
+    try {
+      const stream = await handle.createWritable()
+      writer = stream.getWriter()
+      await writer.write(data)
+      await writer.close()
+    } catch (error) {
+      await writer?.abort().catch(() => {})
+      await this.root.removeEntry(name).catch(() => {})
+      mapQuotaError(error, name)
+      throw error
+    }
+    // Safe-number: part offsets beyond 2^53 bytes are not addressable
+    // through Blob.slice anyway (readRange checks at the boundary).
+    this.parts.push({ handle, file: null, offset: Number(offset), size: data.length })
   }
 
   private assertActive(): void {

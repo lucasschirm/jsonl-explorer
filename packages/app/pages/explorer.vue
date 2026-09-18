@@ -128,7 +128,14 @@ async function resetFile() {
     root keeps its min width and the page scrolls horizontally instead of
     stacking the panels.
   -->
-  <div class="min-h-screen min-w-[1024px] flex flex-col">
+  <!--
+    h-screen (NOT min-h-screen): the root must be exactly viewport height,
+    or the flex children grow to content height and the row list stops
+    scrolling internally — the virtualizer then sees a viewport the size
+    of the whole file and renders every row (TSK0046 deep-scroll e2e
+    caught this: 20k DOM nodes for a 20k-row file).
+  -->
+  <div class="h-screen min-w-[1024px] flex flex-col">
     <!-- Header: small (48px) and fixed — the panels scroll inside it, never it. -->
     <header class="navbar h-12 bg-base-100 border-b border-base-300 px-4">
       <div class="navbar-start">

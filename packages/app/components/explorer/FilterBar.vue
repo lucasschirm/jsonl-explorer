@@ -115,10 +115,14 @@ const placeholder = computed(() =>
           jq
         </button>
       </div>
+      <!-- min-w-0: without it the input's intrinsic ~20ch width keeps it
+           from shrinking, and in the 384px panel the run/clear buttons
+           are squeezed to zero width (invisible, unclickable) — the
+           TSK0046 filter e2e caught this. -->
       <input
         v-model="draft"
         type="text"
-        class="input input-bordered input-sm flex-1"
+        class="input input-sm flex-1 min-w-0"
         :placeholder="placeholder"
         data-testid="filter-input"
         :disabled="filterStore.isRunning"

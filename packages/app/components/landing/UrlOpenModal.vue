@@ -192,7 +192,7 @@ watch(
             <input
               v-model="url"
               type="url"
-              class="input input-bordered w-full pr-10"
+              class="input w-full pr-10"
               placeholder="https://example.com/data.jsonl"
               aria-describedby="url-error"
               :aria-invalid="!!urlError"
@@ -234,14 +234,14 @@ watch(
               <input
                 v-model="header.key"
                 type="text"
-                class="input input-bordered flex-1"
+                class="input flex-1 min-w-0"
                 placeholder="Header name (e.g., Authorization)"
                 :aria-invalid="!!headerErrors[index]"
               />
               <input
                 v-model="header.value"
                 :type="isCredentialRow(index) ? 'password' : 'text'"
-                class="input input-bordered flex-1"
+                class="input flex-1 min-w-0"
                 placeholder="Header value"
                 :aria-invalid="!!headerErrors[index]"
               />

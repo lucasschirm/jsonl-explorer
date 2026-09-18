@@ -22,6 +22,7 @@ import {
   FallbackDeclinedError,
   PagedMemoryStore,
   OpfsSpool,
+  OPFS_PART_SIZE_BYTES,
   SpoolQuotaExceededError,
   SpoolDisposedError,
   SpoolSealedError,
@@ -137,12 +138,13 @@ describe('PagedMemoryStore', () => {
 // ============================================================================
 
 describe('OpfsSpool', () => {
+  const PART = OPFS_PART_SIZE_BYTES
+
   it('appends chunks, reports size, and reads back exact bytes', async () => {
-    const { root, storage } = makeFakeStorage()
+    const { root } = makeFakeStorage()
     const spool = await OpfsSpool.create('spool-test.jsonl', {
       rootDirectory: root as unknown as FileSystemDirectoryHandle,
     })
-    void storage
     const data = patternBytes(1000)
     for (const chunk of splitBytes(data, [333, 333, 334])) {
       await spool.append(chunk)
@@ -151,16 +153,16 @@ describe('OpfsSpool', () => {
     expect(await spool.getSize()).toBe(1000n)
     expect(bytesEqual(await spool.readRange(0, 1000), data)).toBe(true)
     expect(bytesEqual(await spool.readRange(333, 1), data.slice(333, 334))).toBe(true)
-    // Artifact exists under the root.
-    expect(root.entries.has('spool-test.jsonl')).toBe(true)
+    // Below one part: nothing is flushed to disk yet (RAM pending).
+    expect(root.entries.size).toBe(0)
     await spool.dispose()
   })
 
-  it('mid-stream reads see every appended byte (close-per-append contract)', async () => {
-    // Regression (TSK0039): real OPFS only exposes CLOSED writes through
-    // getFile(). The indexer reads via readRange WHILE the URL download
-    // streams — if appends kept a long-lived writer, every read would see
-    // an empty file and the incremental index would loop forever.
+  it('mid-stream reads see every appended byte (RAM pending buffer)', async () => {
+    // The indexer reads via readRange WHILE the URL download streams. Real
+    // OPFS only exposes CLOSED writes through getFile(), so unflushed
+    // bytes are served from the RAM pending buffer: every append is
+    // immediately readable, before any seal (regression, TSK0039/TSK0046).
     const { root } = makeFakeStorage()
     const spool = await OpfsSpool.create('spool-midstream.jsonl', {
       rootDirectory: root as unknown as FileSystemDirectoryHandle,
@@ -171,13 +173,75 @@ describe('OpfsSpool', () => {
       await spool.append(chunk)
       // Read immediately, before any seal: the bytes must be visible.
       expect(await spool.getSize()).toBe(offset + BigInt(chunk.length))
-      expect(
-        bytesEqual(await spool.readRange(offset, chunk.length), chunk),
-      ).toBe(true)
+      expect(bytesEqual(await spool.readRange(offset, chunk.length), chunk)).toBe(true)
       offset += BigInt(chunk.length)
     }
-    // keepExistingData must preserve prior content across append cycles.
     expect(bytesEqual(await spool.readRange(0, 1000), patternBytes(1000))).toBe(true)
+    await spool.dispose()
+  })
+
+  it('flushes 1 MiB part files and reads exact bytes across part + pending boundaries', async () => {
+    // Regression (TSK0046): the old close-per-append design used
+    // createWritable({ keepExistingData: true }), which in real OPFS
+    // OVERWRITES at offset 0 — every append clobbered the file\'s
+    // beginning and multi-chunk URL loads silently lost all but the last
+    // chunk. Parts are written exactly once and never rewritten.
+    const { root } = makeFakeStorage()
+    const spool = await OpfsSpool.create('spool-parts.jsonl', {
+      rootDirectory: root as unknown as FileSystemDirectoryHandle,
+    })
+    const data = patternBytes(2 * PART + 123_456)
+    // 1 MiB chunks: each append fills exactly one part (last stays RAM).
+    for (let off = 0; off < data.length; off += PART) {
+      await spool.append(data.slice(off, Math.min(off + PART, data.length)))
+    }
+    expect(await spool.getSize()).toBe(BigInt(data.length))
+    // Two parts on disk + the 123,456-byte tail in RAM.
+    expect(root.entries.size).toBe(2)
+    const partNames = [...root.entries.keys()].sort()
+    expect(partNames).toEqual(['spool-parts.jsonl-p0', 'spool-parts.jsonl-p1'])
+    // Each part file holds EXACTLY its slice, written once.
+    const part0 = root.entries.get('spool-parts.jsonl-p0') as unknown as {
+      data: Uint8Array
+      closedWritables: number
+    }
+    const part1 = root.entries.get('spool-parts.jsonl-p1') as unknown as {
+      data: Uint8Array
+      closedWritables: number
+    }
+    expect(bytesEqual(part0.data, data.slice(0, PART))).toBe(true)
+    expect(bytesEqual(part1.data, data.slice(PART, 2 * PART))).toBe(true)
+    expect(part0.closedWritables).toBe(1)
+    expect(part1.closedWritables).toBe(1)
+    // Reads: within a part, across the part boundary, and into the RAM tail.
+    expect(bytesEqual(await spool.readRange(0, PART), data.slice(0, PART))).toBe(true)
+    // (offset, LENGTH — not an end offset)
+    expect(
+      bytesEqual(await spool.readRange(PART - 10, 20), data.slice(PART - 10, PART + 10)),
+    ).toBe(true)
+    expect(
+      bytesEqual(
+        await spool.readRange(2 * PART, 123_456),
+        data.slice(2 * PART),
+      ),
+    ).toBe(true)
+    expect(bytesEqual(await spool.readRange(0, data.length), data)).toBe(true)
+    await spool.dispose()
+  })
+
+  it('a single chunk larger than one part produces multiple parts', async () => {
+    const { root } = makeFakeStorage()
+    const spool = await OpfsSpool.create('spool-big.jsonl', {
+      rootDirectory: root as unknown as FileSystemDirectoryHandle,
+    })
+    const data = patternBytes(PART * 3 + 7)
+    await spool.append(data)
+    expect(root.entries.size).toBe(3)
+    expect(await spool.getSize()).toBe(BigInt(data.length))
+    expect(bytesEqual(await spool.readRange(0, data.length), data)).toBe(true)
+    expect(
+      bytesEqual(await spool.readRange(PART * 3, 7), data.slice(PART * 3)),
+    ).toBe(true)
     await spool.dispose()
   })
 
@@ -194,16 +258,18 @@ describe('OpfsSpool', () => {
     await spool.dispose()
   })
 
-  it('maps QuotaExceededError writes to SpoolQuotaExceededError', async () => {
+  it('maps QuotaExceededError part flushes to SpoolQuotaExceededError and removes the partial part', async () => {
     const { root } = makeFakeStorage()
     root.quotaLimit = 10
     const spool = await OpfsSpool.create('spool-quota.jsonl', {
       rootDirectory: root as unknown as FileSystemDirectoryHandle,
     })
-    await spool.append(new Uint8Array(8))
-    await expect(spool.append(new Uint8Array(8))).rejects.toBeInstanceOf(SpoolQuotaExceededError)
-    // The failed append did not count toward the spool size.
-    expect(await spool.getSize()).toBe(8n)
+    // One full part triggers a flush; the fake quota (10 B) rejects it.
+    await expect(spool.append(patternBytes(PART))).rejects.toBeInstanceOf(SpoolQuotaExceededError)
+    // The failed append did not count toward the spool size, and no
+    // partial part file is left behind.
+    expect(await spool.getSize()).toBe(0n)
+    expect(root.entries.size).toBe(0)
     await spool.dispose()
   })
 
@@ -219,25 +285,27 @@ describe('OpfsSpool', () => {
     await spool.dispose()
   })
 
-  it('dispose removes the artifact and is idempotent; ops after dispose reject', async () => {
+  it('dispose removes every part and is idempotent; ops after dispose reject', async () => {
     const { root } = makeFakeStorage()
     const spool = await OpfsSpool.create('spool-dipose.jsonl', {
       rootDirectory: root as unknown as FileSystemDirectoryHandle,
     })
-    await spool.append(patternBytes(4))
+    await spool.append(patternBytes(PART + 4)) // 1 part + RAM tail
+    expect(root.entries.size).toBe(1)
     await spool.dispose()
-    expect(root.entries.has('spool-dipose.jsonl')).toBe(false)
+    expect(root.entries.size).toBe(0)
     await expect(spool.dispose()).resolves.toBeUndefined()
     await expect(spool.getSize()).rejects.toBeInstanceOf(SpoolDisposedError)
     await expect(spool.readRange(0, 1)).rejects.toBeInstanceOf(SpoolDisposedError)
   })
 
-  it('dispose tolerates a missing artifact (not-found)', async () => {
+  it('dispose tolerates a missing part (not-found)', async () => {
     const { root } = makeFakeStorage()
     const spool = await OpfsSpool.create('spool-missing.jsonl', {
       rootDirectory: root as unknown as FileSystemDirectoryHandle,
     })
-    root.entries.delete('spool-missing.jsonl')
+    await spool.append(patternBytes(PART))
+    root.entries.clear()
     await expect(spool.dispose()).resolves.toBeUndefined()
   })
 
@@ -381,10 +449,9 @@ describe('UrlDownloader', () => {
     expect(result.declaredBytes).toBe(BigInt(PAYLOAD.length))
     expect(await result.spool.getSize()).toBe(BigInt(PAYLOAD.length))
     expect(bytesEqual(await result.spool.readRange(0, PAYLOAD.length), PAYLOAD)).toBe(true)
-    // Artifact present, spool name matches the session prefix.
-    const spoolNames = [...(root as unknown as FakeDirHandle).entries.keys()]
-    expect(spoolNames.length).toBe(1)
-    expect(spoolNames[0]!.startsWith(SPOOL_ARTIFACT_PREFIX)).toBe(true)
+    // Below one 1 MiB part: bytes live in the RAM pending buffer, so no
+    // part file exists yet (parts appear only once 1 MiB is flushed).
+    expect((root as unknown as FakeDirHandle).entries.size).toBe(0)
     // Progress: cumulative, determinate (Content-Length, no encoding).
     expect(progress).toEqual([
       { receivedBytes: 8, totalBytes: PAYLOAD.length },
@@ -494,11 +561,15 @@ describe('UrlDownloader', () => {
     await downloader.dispose()
   })
 
+  // Mid-stream quota failures surface when a PART FLUSH fails (parts are
+  // the only thing written to disk), so these tests use part-scale data.
+  const BIG = patternBytes(OPFS_PART_SIZE_BYTES + 8) // 1 part + 8-byte tail
+
   it('re-fetches into paged RAM when OPFS quota is exceeded mid-stream', async () => {
     const { root, storage } = makeFakeStorage({ quota: 10 * 1024 * 1024 })
-    root.quotaLimit = 10 // first chunk (8) fits, second (8+10) overflows
+    root.quotaLimit = 10 // the 1 MiB part flush overflows immediately
     const { onFallbackRequest, infos } = consentRecorder()
-    const { impl, calls } = makeFetch(PAYLOAD, { chunks: [8, 10, 100] })
+    const { impl, calls } = makeFetch(BIG, { chunks: [BIG.length] })
     const downloader = new UrlDownloader({
       fetchImpl: impl,
       storage,
@@ -507,10 +578,10 @@ describe('UrlDownloader', () => {
     const result = await downloader.download('https://example.com/x.jsonl')
     expect(calls.length).toBe(2) // original + re-fetch
     expect(result.spool.kind).toBe('memory')
-    expect(bytesEqual(await result.spool.readRange(0, PAYLOAD.length), PAYLOAD)).toBe(true)
-    // Declared 22 bytes < consent threshold: RAM fallback is auto-accepted.
+    expect(bytesEqual(await result.spool.readRange(0, BIG.length), BIG)).toBe(true)
+    // Declared size < consent threshold: RAM fallback is auto-accepted.
     expect(infos).toEqual([])
-    // The partial OPFS artifact was removed; nothing left behind.
+    // The partial OPFS part was removed; nothing left behind.
     expect([...(root as unknown as FakeDirHandle).entries.keys()].length).toBe(0)
     await downloader.dispose()
   })
@@ -519,7 +590,7 @@ describe('UrlDownloader', () => {
     const { root, storage } = makeFakeStorage({ quota: 10 * 1024 * 1024 })
     root.quotaLimit = 10
     const { onFallbackRequest, infos } = consentRecorder()
-    const { impl, calls } = makeFetch(PAYLOAD, { noContentLength: true, chunks: [8, 10, 100] })
+    const { impl, calls } = makeFetch(BIG, { noContentLength: true, chunks: [BIG.length] })
     const downloader = new UrlDownloader({
       fetchImpl: impl,
       storage,
@@ -528,18 +599,19 @@ describe('UrlDownloader', () => {
     const result = await downloader.download('https://example.com/x.jsonl')
     expect(calls.length).toBe(2)
     expect(result.spool.kind).toBe('memory')
-    expect(bytesEqual(await result.spool.readRange(0, PAYLOAD.length), PAYLOAD)).toBe(true)
+    expect(bytesEqual(await result.spool.readRange(0, BIG.length), BIG)).toBe(true)
+    // The failed flush had not committed any part: 0 spooled bytes.
     expect(infos).toEqual([
-      { reason: 'opfs-quota-exceeded', declaredBytes: undefined, receivedBytes: 8 },
+      { reason: 'opfs-quota-exceeded', declaredBytes: undefined, receivedBytes: 0 },
     ])
     expect([...(root as unknown as FakeDirHandle).entries.keys()].length).toBe(0)
     await downloader.dispose()
   })
 
-  it('propagates decline after a mid-stream quota failure and removes the artifact', async () => {
+  it('propagates decline after a mid-stream quota failure and removes the partial part', async () => {
     const { root, storage } = makeFakeStorage({ quota: 10 * 1024 * 1024 })
     root.quotaLimit = 10
-    const { impl, calls } = makeFetch(PAYLOAD, { noContentLength: true, chunks: [8, 10, 100] })
+    const { impl, calls } = makeFetch(BIG, { noContentLength: true, chunks: [BIG.length] })
     const downloader = new UrlDownloader({
       fetchImpl: impl,
       storage,

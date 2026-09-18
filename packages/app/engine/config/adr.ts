@@ -348,10 +348,13 @@ export const CLI_CONFIG = {
  *
  * Sources:
  * - FileSource: structured-clone File/Blob, worker-owned slice()
- * - UrlSource: worker-owned fetch → OPFS spool (artifact `spool-<uuid>.jsonl`,
- *   random per session) → indexing. OPFS artifacts are removed on dispose,
- *   abort, and failure; stale `spool-*` artifacts are cleaned at worker
- *   startup. When OPFS is unavailable or its quota is exhausted, the byte
+ * - UrlSource: worker-owned fetch → OPFS spool (session `spool-<uuid>`,
+ *   random per session; written as IMMUTABLE 1 MiB PART FILES
+ *   `spool-<uuid>.jsonl-p<n>` plus a bounded in-RAM pending buffer —
+ *   real OPFS `createWritable({keepExistingData})` overwrites at offset
+ *   0 and does NOT append, so no single-file append cycles) → indexing.
+ *   OPFS parts are removed on dispose, abort, and failure; stale
+ *   `spool-*` entries are cleaned at worker startup. When OPFS is unavailable or its quota is exhausted, the byte
  *   stream falls back to fixed-size in-memory pages (256 KiB) WITHOUT
  *   concatenating the response; large (> maxHandoverPayloadBytes) or
  *   unknown-size responses require explicit user confirmation (the fallback

@@ -13,7 +13,7 @@ export type { ByteSpool, SpoolKind } from './spool.js'
 export { PagedMemoryStore } from './pagedStore.js'
 export type { PagedMemoryStoreOptions } from './pagedStore.js'
 
-export { OpfsSpool } from './opfsSpool.js'
+export { OpfsSpool, OPFS_PART_SIZE_BYTES } from './opfsSpool.js'
 export type { OpfsSpoolOptions } from './opfsSpool.js'
 
 export { estimateStorageQuota } from './quota.js'

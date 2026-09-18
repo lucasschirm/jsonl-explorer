@@ -51,31 +51,35 @@ export class FakeFileHandle {
   }
 
   /**
-   * Faithful to real OPFS semantics: writes are STAGED on the writable
-   * and only become visible through getFile() once the writable is
-   * CLOSED. `keepExistingData: false` (the default) truncates the file
-   * on open. (The old fake committed writes immediately, which masked a
-   * real-browser bug where an unclosed writer hid streamed bytes from
-   * concurrent reads — TSK0039.)
+   * Faithful to REAL OPFS semantics (verified in Chromium, TSK0046):
+   * - writes are STAGED on the writable and only become visible through
+   *   getFile() once the writable is CLOSED;
+   * - `keepExistingData: false` (default) truncates the file on open;
+   * - `keepExistingData: true` does NOT append: the writable starts at
+   *   OFFSET 0 and OVERWRITES in place (a shorter write SHRINKS the
+   *   file). This is why the spool must not use close-per-append
+   *   cycles on one file — each cycle was silently clobbering the
+   *   file's beginning (the old fake modeled append-at-end, which
+   *   masked the bug; TSK0039's staged-write fix is preserved).
    */
   async createWritable(options?: { keepExistingData?: boolean }) {
     let closed = false
     const self = this
-    let staged = options?.keepExistingData ? this.data : new Uint8Array(0)
+    let staged = options?.keepExistingData ? this.data.slice() : new Uint8Array(0)
+    let position = 0
     return {
       getWriter() {
         return {
           async write(chunk: Uint8Array): Promise<void> {
             if (closed) throw new Error('Writer is closed')
-            if (
-              self.quotaLimit !== null &&
-              staged.length + chunk.length > self.quotaLimit
-            ) {
+            const projectedSize = Math.max(staged.length, position + chunk.length)
+            if (self.quotaLimit !== null && projectedSize > self.quotaLimit) {
               throw new DOMException('Exceeded quota', 'QuotaExceededError')
             }
-            const next = new Uint8Array(staged.length + chunk.length)
+            const next = new Uint8Array(Math.max(staged.length, position + chunk.length))
             next.set(staged, 0)
-            next.set(chunk, staged.length)
+            next.set(chunk, position)
+            position += chunk.length
             staged = next
           },
           async close(): Promise<void> {

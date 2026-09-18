@@ -268,6 +268,10 @@ class Indexer {
       const remaining = size - this.fedOffset
       const want = remaining < BigInt(this.scanner.chunkSize) ? Number(remaining) : this.scanner.chunkSize
       const chunk = await this.source.readRange(this.fedOffset, want)
+      // Contract: offset < size ⇒ real bytes. An empty read here would
+      // spin this loop forever (fedOffset never advances) and starve the
+      // download — fail loudly instead (TSK0046, OPFS overwrite bug).
+      if (chunk.length === 0) throw new Error('Spool source returned an empty read')
       this.scanner.feed(chunk, this.fedOffset)
       this.fedOffset += BigInt(chunk.length)
       this.emitDeltaProgress(options)

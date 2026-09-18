@@ -48,6 +48,18 @@ export default defineNuxtConfig({
     documentDriven: false,
   },
 
+  // Nuxt wires CSS PostCSS plugins from `nuxt.options.postcss` ONLY — it
+  // always sets `vite.css.postcss = { plugins: [] }`, which makes Vite
+  // IGNORE a `postcss.config.js` (Nuxt even warns about it). With the
+  // config file, `@tailwindcss/postcss` never ran and the build shipped
+  // raw `@tailwind`/`@plugin`/`@apply` at-rules: zero Tailwind utilities,
+  // zero daisyUI components (TSK0046 e2e caught the unstyled layout).
+  postcss: {
+    plugins: {
+      '@tailwindcss/postcss': {},
+    },
+  },
+
   app: {
     head: {
       title: 'JSONL Explorer',

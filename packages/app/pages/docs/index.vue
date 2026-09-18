@@ -35,7 +35,7 @@ const sortedDocs = computed(() => docs?.sort((a, b) => a.title.localeCompare(b.t
             v-for="doc in sortedDocs"
             :key="doc._path"
             :to="doc._path"
-            class="card card-compact bg-base-200 hover:bg-base-300 transition-colors"
+            class="card card-sm bg-base-200 hover:bg-base-300 transition-colors"
           >
             <div class="card-body">
               <h3 class="card-title text-base-content">{{ doc.title }}</h3>
