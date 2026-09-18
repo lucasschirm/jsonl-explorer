@@ -30,7 +30,7 @@ onMounted(async () => {
 
 <template>
   <div class="min-h-screen flex items-center justify-center p-4 bg-base-200">
-    <div class="w-full max-w-2xl">
+    <main class="w-full max-w-2xl">
       <!-- Header -->
       <div class="text-center mb-8">
         <h1 class="text-4xl font-bold text-base-content mb-2">JSONL Explorer</h1>
@@ -59,7 +59,7 @@ onMounted(async () => {
               </svg>
               Open from URL
             </button>
-            <p class="text-sm text-base-content/60 mt-2">
+            <p class="text-sm text-base-content/70 mt-2">
               Load JSONL from a public URL with optional custom headers
             </p>
           </div>
@@ -78,7 +78,7 @@ onMounted(async () => {
       </div>
 
       <!-- Footer links -->
-      <div class="mt-6 flex justify-center gap-4 text-sm text-base-content/60">
+      <div class="mt-6 flex justify-center gap-4 text-sm text-base-content/70">
         <nuxt-link to="/about" class="hover:underline">About</nuxt-link>
         <nuxt-link to="/docs" class="hover:underline">Documentation</nuxt-link>
         <a
@@ -90,7 +90,7 @@ onMounted(async () => {
           GitHub
         </a>
       </div>
-    </div>
+    </main>
 
     <!-- URL Open Modal -->
     <UrlOpenModal v-model:open="showUrlModal" :initial-url="initialUrl" />

@@ -90,9 +90,7 @@ function triggerFileInput() {
 <template>
   <div
     ref="dropZone"
-    class="relative border-2 border-dashed rounded-lg p-8 text-center transition-colors
-           hover:border-primary/50 hover:bg-primary/5
-           cursor-pointer"
+    class="relative border-2 border-dashed rounded-lg transition-colors"
     :class="[
       isDragging ? 'border-primary bg-primary/10' : 'border-base-300',
       isLoading ? 'opacity-50 pointer-events-none' : '',
@@ -100,23 +98,21 @@ function triggerFileInput() {
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop="onDrop"
-    @click="triggerFileInput"
-    role="button"
-    tabindex="0"
-    @keydown.enter="triggerFileInput"
-    @keydown.space.prevent="triggerFileInput"
-    aria-label="File drop zone. Click or drag and drop a JSONL file."
   >
-    <input
-      ref="fileInput"
-      type="file"
-      id="file-input"
-      class="absolute inset-0 opacity-0 cursor-pointer"
-      accept=".jsonl,.json,.ndjson,.txt,*/*"
-      @change="onFileSelected"
-      aria-hidden="true"
-    />
-
+    <!-- The file input is a SIBLING of this button (not a child): an
+         interactive control nested in role=button fails axe
+         (nested-interactive), and aria-hidden on a focusable input fails
+         aria-hidden-focus. The button triggers the input programmatically. -->
+    <div
+      class="p-8 text-center transition-colors cursor-pointer
+             hover:border-primary/50 hover:bg-primary/5"
+      role="button"
+      tabindex="0"
+      @click="triggerFileInput"
+      @keydown.enter="triggerFileInput"
+      @keydown.space.prevent="triggerFileInput"
+      aria-label="File drop zone. Click or drag and drop a JSONL file."
+    >
     <div class="space-y-3">
       <svg
         class="w-12 h-12 mx-auto text-base-content/40"
@@ -137,7 +133,7 @@ function triggerFileInput() {
         <p class="text-lg font-medium text-base-content">
           Drop a JSONL file here or click to browse
         </p>
-        <p class="text-sm text-base-content/60 mt-1">
+        <p class="text-sm text-base-content/70 mt-1">
           Supports .jsonl, .json, .ndjson, .txt (any text file)
         </p>
       </div>
@@ -146,7 +142,7 @@ function triggerFileInput() {
         Drop file to load
       </div>
 
-      <div v-if="isLoading" class="flex items-center justify-center gap-2 text-base-content/60">
+      <div v-if="isLoading" class="flex items-center justify-center gap-2 text-base-content/70">
         <svg class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
@@ -154,5 +150,16 @@ function triggerFileInput() {
         <span>Loading file...</span>
       </div>
     </div>
+    </div>
+    <input
+      ref="fileInput"
+      type="file"
+      id="file-input"
+      class="sr-only"
+      tabindex="-1"
+      accept=".jsonl,.json,.ndjson,.txt,*/*"
+      @change="onFileSelected"
+      aria-label="Choose a JSONL file to open"
+    />
   </div>
 </template>

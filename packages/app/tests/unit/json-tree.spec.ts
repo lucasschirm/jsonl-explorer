@@ -46,10 +46,15 @@ describe('JsonTree rendering', () => {
     expect(kinds).toContain('number')
     expect(kinds).toContain('boolean')
     expect(kinds).toContain('null')
-    // Theme-aware classes (DaisyUI semantic colors, not hardcoded hex).
+    // Theme-aware classes: the --token-* variables (main.css) are chosen
+    // to meet WCAG AA on both themes — stock daisyUI accent colors fail
+    // contrast (TSK0052).
     const stringToken = tokens.find((t) => t.attributes('data-token') === 'string')!
-    expect(stringToken.classes()).toContain('text-success')
+    expect(stringToken.classes()).toContain('text-token-string')
+    const numberToken = tokens.find((t) => t.attributes('data-token') === 'number')!
+    expect(numberToken.classes()).toContain('text-token-number')
     const nullToken = tokens.find((t) => t.attributes('data-token') === 'null')!
+    expect(nullToken.classes()).toContain('text-token-muted')
     expect(nullToken.classes()).toContain('italic')
   })
 

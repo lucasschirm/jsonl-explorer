@@ -146,9 +146,14 @@ describe('edge cases', () => {
 
   it('keyboard: Enter/Space on the zone opens the picker', async () => {
     const wrapper = await mountZone()
-    await wrapper.trigger('keydown.enter')
+    // TSK0052: the keyboard target is the role=button div — the file
+    // input is a SIBLING (not a child) of that button, so the event is
+    // dispatched on the button, not the component root.
+    const zone = wrapper.find('[role="button"]')
+    expect(zone.exists()).toBe(true)
+    await zone.trigger('keydown.enter')
     expect(clickSpy).toHaveBeenCalledTimes(1)
-    await wrapper.trigger('keydown.space')
+    await zone.trigger('keydown.space')
     expect(clickSpy).toHaveBeenCalledTimes(2)
   })
 

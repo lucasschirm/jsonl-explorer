@@ -140,15 +140,20 @@ const entries = computed<Array<{ key: string; value: JsonValue }>>(() => {
   return []
 })
 
+/**
+ * TSK0052: token colors come from --token-* variables (main.css) chosen to
+ * meet WCAG AA (4.5:1) on both daisyUI themes — the stock theme colors
+ * (success/warning/info) fail contrast on the light background.
+ */
 function tokenClass(value: JsonValue): string {
-  if (value === null) return 'text-base-content/50 italic'
+  if (value === null) return 'text-token-muted italic'
   switch (typeof value) {
     case 'string':
-      return 'text-success'
+      return 'text-token-string'
     case 'number':
-      return 'text-warning'
+      return 'text-token-number'
     case 'boolean':
-      return 'text-info'
+      return 'text-token-boolean'
     default:
       return 'text-base-content'
   }
@@ -171,13 +176,13 @@ function primitiveToken(value: JsonValue): string {
         v-if="keyName !== null"
         class="shrink-0 break-all"
         :class="[
-          isArrayEntry ? 'font-mono text-base-content/50' : 'font-medium text-primary',
+          isArrayEntry ? 'font-mono text-token-muted' : 'font-medium text-token-key',
           isMatch ? 'bg-warning/30 rounded-sm' : '',
           isCurrent ? 'bg-warning/60 rounded-sm' : '',
         ]"
       >
         {{ keyName }}
-        <span v-if="!isArrayEntry" class="text-base-content/50">:</span>
+        <span v-if="!isArrayEntry" class="text-token-muted">:</span>
       </span>
 
       <!-- Inline editor (TSK0031): replaces the value token while editing.
@@ -204,10 +209,12 @@ function primitiveToken(value: JsonValue): string {
           type="button"
           class="shrink-0 p-0.5 text-base-content/60 hover:text-base-content"
           :aria-expanded="expanded"
+          :aria-label="expanded ? `Collapse ${keyName ?? 'root'}` : `Expand ${keyName ?? 'root'}`"
           :data-testid="`json-toggle-${keyName ?? 'root'}-${depth}`"
           @click="expanded = !expanded"
         >
           <svg
+            aria-hidden="true"
             class="w-3.5 h-3.5 transition-transform"
             :class="expanded ? 'rotate-90' : ''"
             viewBox="0 0 24 24"
@@ -223,23 +230,27 @@ function primitiveToken(value: JsonValue): string {
           type="button"
           class="shrink-0 p-0 bg-transparent text-base-content/70 cursor-text hover:text-base-content"
           :data-testid="`json-edit-${keyName ?? 'root'}-${depth}`"
+          :aria-label="`Edit value of ${keyName ?? 'root'}`"
           title="Edit this value"
           :disabled="exportLocked"
           @click="beginEdit()"
         >
-          {{ isArr ? '[' : '{' }}
+          <span aria-hidden="true">{{ isArr ? '[' : '{' }}</span>
         </button>
         <button
           v-else
           type="button"
-          class="shrink-0 p-0 bg-transparent text-base-content/60 cursor-text hover:text-base-content"
+          class="shrink-0 p-0 bg-transparent text-base-content/70 cursor-text hover:text-base-content"
           :data-testid="`json-count-${keyName ?? 'root'}-${depth}`"
+          :aria-label="`Edit value of ${keyName ?? 'root'} (${count} items)`"
           title="Edit this value"
           :disabled="exportLocked"
           @click="beginEdit()"
         >
-          {{ isArr ? '[' : '{' }} {{ count }} item{{ count === 1 ? '' : 's' }}
-          {{ isArr ? ']' : '}' }}
+          <span aria-hidden="true">
+            {{ isArr ? '[' : '{' }} {{ count }} item{{ count === 1 ? '' : 's' }}
+            {{ isArr ? ']' : '}' }}
+          </span>
         </button>
       </template>
 

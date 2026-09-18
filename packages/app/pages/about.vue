@@ -75,7 +75,7 @@ const exceptionNames = new Set(['xmlhttprequest-ssl', 'node-forge'])
                 <code class="text-mono">--insecure-local-network</code> flag is required to even
                 try exposing it). It is a convenience for local files, not a backend: the
                 browser app itself works fully without it. See the
-                <nuxt-link to="/docs/cli" class="link link-primary">CLI guide</nuxt-link>.
+                <nuxt-link to="/docs/cli" class="link link-token">CLI guide</nuxt-link>.
               </p>
             </div>
           </div>
@@ -112,9 +112,9 @@ const exceptionNames = new Set(['xmlhttprequest-ssl', 'node-forge'])
                       :href="dep.url"
                       target="_blank"
                       rel="noopener noreferrer"
-                      class="link link-primary font-mono text-sm"
+                      class="link link-token font-mono text-sm"
                     >{{ dep.name }}</a>
-                    <p v-if="exceptionNames.has(dep.name)" class="text-xs text-base-content/50 mt-1">
+                    <p v-if="exceptionNames.has(dep.name)" class="text-xs text-base-content/70 mt-1">
                       license via documented policy exception (verified against the shipped LICENSE file)
                     </p>
                   </td>
@@ -122,7 +122,7 @@ const exceptionNames = new Set(['xmlhttprequest-ssl', 'node-forge'])
                   <td class="whitespace-nowrap">
                     <span class="badge badge-outline badge-sm">{{ dep.license }}</span>
                     <details v-if="dep.licenseText" class="mt-1">
-                      <summary class="text-xs link link-primary cursor-pointer">license text</summary>
+                      <summary class="text-xs link link-token cursor-pointer">license text</summary>
                       <pre class="text-xs bg-base-200 rounded p-2 mt-1 max-h-64 overflow-auto whitespace-pre-wrap">{{ dep.licenseText }}</pre>
                     </details>
                   </td>

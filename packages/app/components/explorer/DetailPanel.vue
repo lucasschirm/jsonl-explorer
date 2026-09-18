@@ -155,13 +155,13 @@ function confirmTree(): void {
       >
         Reset
       </button>
-      <span class="text-xs text-base-content/50">
+      <span class="text-xs text-base-content/70">
         <template v-if="detailStore.status === 'ready'">
           Line {{ detailStore.lineId }} · {{ formatBytes(detailStore.byteLength) }}
           <span
             v-if="editsStore.isEdited(detailStore.lineId)"
             data-testid="detail-edited-badge"
-            class="badge badge-xs badge-outline badge-warning font-sans"
+            class="badge badge-xs badge-outline badge-edited font-sans"
           >
             edited
           </span>
@@ -172,7 +172,7 @@ function confirmTree(): void {
 
     <!-- No active row -->
     <div v-if="detailStore.status === 'idle'" class="flex-1 overflow-auto p-4">
-      <div class="text-center text-base-content/50 py-12" data-testid="detail-placeholder">
+      <div class="text-center text-base-content/70 py-12" data-testid="detail-placeholder">
         <svg class="w-16 h-16 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path
             stroke-linecap="round"
@@ -193,7 +193,7 @@ function confirmTree(): void {
 
     <!-- Loading (a getLine is in flight) -->
     <div v-else-if="detailStore.status === 'loading'" class="flex-1 overflow-auto p-4" data-testid="detail-loading">
-      <p class="text-base-content/50 text-sm animate-pulse">Loading row…</p>
+      <p class="text-base-content/70 text-sm animate-pulse">Loading row…</p>
     </div>
 
     <!-- Ready: one of tree / invalid-raw / large-raw -->

@@ -139,7 +139,8 @@ async function resetFile() {
     <!-- Header: small (48px) and fixed — the panels scroll inside it, never it. -->
     <header class="navbar h-12 bg-base-100 border-b border-base-300 px-4">
       <div class="navbar-start">
-        <span class="text-lg font-semibold text-base-content">JSONL Explorer</span>
+        <!-- h1: every page needs exactly one level-1 heading (TSK0052) -->
+        <h1 class="text-lg font-semibold text-base-content">JSONL Explorer</h1>
       </div>
       <div class="navbar-center hidden md:flex">
         <!-- Search bar will go here -->
@@ -233,9 +234,11 @@ async function resetFile() {
 
       <!-- Right panel - JSON detail (TSK0024): on-demand full text, -->
       <!-- collapsible tree, raw fallbacks, Format/Compact presentation -->
-      <aside class="flex-1 flex flex-col overflow-hidden bg-base-100">
+      <!-- section (not a second <aside>): two complementary landmarks -->
+      <!-- fail axe landmark-unique (TSK0052).                          -->
+      <section aria-label="Row details" class="flex-1 flex flex-col overflow-hidden bg-base-100">
         <DetailPanel />
-      </aside>
+      </section>
       </template>
     </main>
 

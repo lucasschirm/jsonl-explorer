@@ -62,6 +62,7 @@ export default defineNuxtConfig({
 
   app: {
     head: {
+      htmlAttrs: { lang: 'en' },
       title: 'JSONL Explorer',
       meta: [
         { charset: 'utf-8' },

@@ -52,6 +52,43 @@
   ::selection {
     @apply bg-primary/30;
   }
+
+  /* TSK0052: respect the user's reduced-motion preference app-wide —
+     kill animations/transitions (pulse, spin, toasts, modal fades). */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* TSK0052: JSON syntax-token colors, chosen per theme to meet WCAG AA
+   (>=4.5:1) on the theme's base-100/base-200. The stock daisyUI accent
+   colors (success/warning/info/primary) do not. Light values are the
+   defaults; [data-theme="dark"] overrides them (daisyUI's dark base-*
+   beat these at :root). */
+:root {
+  --token-key: #1d4ed8;
+  --token-string: #166534;
+  --token-number: #92400e;
+  --token-boolean: #7e22ce;
+  --token-muted: #475569;
+  --token-link: #1d4ed8;
+}
+[data-theme='dark'] {
+  --token-key: #93c5fd;
+  --token-string: #86efac;
+  --token-number: #fcd34d;
+  --token-boolean: #d8b4fe;
+  --token-muted: #94a3b8;
+  --token-link: #93c5fd;
 }
 
 @layer components {
@@ -111,6 +148,40 @@
 
   .text-mono {
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  .text-token-key {
+    color: var(--token-key);
+  }
+
+  .text-token-string {
+    color: var(--token-string);
+  }
+
+  .text-token-number {
+    color: var(--token-number);
+  }
+
+  .text-token-boolean {
+    color: var(--token-boolean);
+  }
+
+  .text-token-muted {
+    color: var(--token-muted);
+  }
+
+  /* Prose links: --color-primary (#3b82f6) fails AA on the dark base —
+     use a per-theme link token (TSK0052). */
+  .link-token {
+    color: var(--token-link);
+  }
+
+  /* The 'edited' badge: badge-warning (amber-500) fails AA on light.
+     token-number (burnt amber / amber-300) passes on both themes. */
+  .badge-edited {
+    color: var(--token-number);
+    border-color: var(--token-number);
+    background-color: transparent;
   }
 
   .truncate-multiline {

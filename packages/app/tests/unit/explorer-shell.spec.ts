@@ -107,10 +107,14 @@ describe('explorer shell (TSK0020)', () => {
     const root = wrapper.find('div')
     expect(root.classes()).toContain('min-w-[1024px]')
     // The left panel is fixed width, the right one flexes — never stacked.
+    // TSK0052: the right panel is a labeled <section>, not a second
+    // <aside> — two complementary landmarks fail axe landmark-unique.
     const asides = wrapper.findAll('aside')
-    expect(asides.length).toBe(2)
+    expect(asides.length).toBe(1)
     expect(asides[0]!.classes()).toContain('w-96')
-    expect(asides[1]!.classes()).toContain('flex-1')
+    const right = wrapper.find('section[aria-label="Row details"]')
+    expect(right.exists()).toBe(true)
+    expect(right.classes()).toContain('flex-1')
     wrapper.unmount()
   })
 })

@@ -12,6 +12,7 @@ import {
   type UrlIntake,
 } from '~/utils/urlIntake'
 import LoadingPanel from '~/components/loading/LoadingPanel.vue'
+import { useModalBehavior } from '~/composables/useModalBehavior'
 
 interface HeaderEntry {
   key: string
@@ -42,6 +43,16 @@ const url = ref('')
 const headers = ref<HeaderEntry[]>([{ key: '', value: '' }])
 const isLoading = ref(false)
 let hasPrefilled = false
+
+// TSK0052: this modal previously had no Escape handling, no focus trap
+// and no focus restoration — the shared modal behavior fixes all three
+// (same implementation as Modal.vue). Escape is ignored while a load
+// is in flight, matching the disabled Cancel button.
+const { modalRef } = useModalBehavior(
+  () => props.open,
+  () => onCancel(),
+  { canEscape: () => !isLoading.value },
+)
 
 /** Live URL validation (decideUrlInput is pure; see utils/urlIntake.ts). */
 const urlIntake = computed<UrlIntake>(() => decideUrlInput(url.value))
@@ -179,17 +190,29 @@ watch(
 
 <template>
   <Teleport to="body">
-    <div v-if="props.open" class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="url-modal-title">
+    <div
+      v-if="props.open"
+      ref="modalRef"
+      class="modal modal-open"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="url-modal-title"
+    >
       <div class="modal-box max-w-2xl">
-        <h3 id="url-modal-title" class="font-bold text-lg mb-4">Open JSONL from URL</h3>
+        <!-- h2 (not h3): the page h1 precedes the modal in DOM order, so -->
+        <!-- h2 keeps the heading hierarchy intact (TSK0052).               -->
+        <h2 id="url-modal-title" class="font-bold text-lg mb-4">Open JSONL from URL</h2>
 
         <!-- URL Input -->
         <div class="mb-4">
-          <label class="label">
+          <!-- for/id: a sibling <label> without `for` is NOT an accessible -->
+          <!-- name (TSK0052) — the input needs a proper labelled pair.     -->
+          <label class="label" for="url-input">
             <span class="label-text">URL (HTTP/HTTPS)</span>
           </label>
           <div class="relative">
             <input
+              id="url-input"
               v-model="url"
               type="url"
               class="input w-full pr-10"
@@ -209,9 +232,11 @@ watch(
         <!-- Headers -->
         <div class="mb-4">
           <div class="flex items-center justify-between mb-2">
-            <label class="label cursor-pointer">
+            <!-- span (not label): no form control to label — a bare -->
+            <!-- <label> without `for` is noise for screen readers.    -->
+            <span class="label cursor-pointer">
               <span class="label-text">Custom Headers (optional)</span>
-            </label>
+            </span>
             <button
               type="button"
               @click="addHeader"

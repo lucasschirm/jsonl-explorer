@@ -83,15 +83,24 @@ byte-capped; the detail is exact) and rendered as an editable JSON tree:
 
 ## Keyboard Navigation
 
-The row list is keyboard operable: click it (or Tab to it) to give it
-focus, then
+The whole explorer is usable with a keyboard alone. Two ways to drive
+the row list:
 
-- `↑` / `↓` — Move the selection up/down (clamped at the first and last
-  row; the row is scrolled into view and fetched on demand when it is
-  not cached yet).
-- `Enter` — Move focus to the editor for the selected row (the tree's
-  root value, or the raw editor for invalid rows), ready for `Tab`/click
-  to start editing.
+- **List mode** — Tab to the row list (it shows a focus ring), then
+  - `↑` / `↓` — Move the selection up/down (clamped at the first and
+    last row; the row is scrolled into view and fetched on demand when
+    it is not cached yet).
+  - `Enter` — Move focus to the editor for the selected row (the tree's
+    root value, or the raw editor for invalid rows), ready for `Tab`/
+    click to start editing.
+- **Row mode** — Tab through individual rows (each row is a real
+  button); `Enter` or `Space` selects the focused row.
+
+Tree controls, filters, export, and dialogs are all real focusable
+controls (chevrons expose expand/collapse state, modals trap focus and
+return it to the trigger on close, and status/counts update in live
+regions for screen readers). Animations and transitions are disabled
+when your system requests reduced motion.
 
 Page-wide shortcuts (work wherever focus is on the page):
 

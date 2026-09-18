@@ -39,10 +39,60 @@ const FIXTURES = join(here, '..', 'e2e', 'fixtures')
 const PORT = Number(process.env['PORT'] ?? 4173)
 const NITRO_PORT = Number(process.env['NITRO_PORT'] ?? 4174)
 
+/**
+ * Fail fast if the nitro port is already taken: a STALE nitro from a
+ * previous session would otherwise serve an old build under this
+ * server's port 4173, producing mysteriously stale pages (this exact
+ * trap was hit in TSK0052).
+ */
+function assertPortFree(port) {
+  return new Promise((resolve, reject) => {
+    const probe = http.createServer()
+    probe.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') reject(err)
+      else probe.close()
+    })
+    probe.once('listening', () => {
+      probe.close(() => resolve())
+    })
+    probe.listen(port, '127.0.0.1')
+  })
+}
+
+// MUST be awaited BEFORE spawning nitro: a stale nitro on the port would
+// otherwise serve an OLD build under this server (this trap was hit in
+// TSK0052). Fail fast with an actionable message.
+try {
+  await assertPortFree(NITRO_PORT)
+} catch (err) {
+  console.error(
+    `e2e-server: port ${NITRO_PORT} is already in use — kill the stale ` +
+      `process (e.g. 'fuser -k ${NITRO_PORT}/tcp') and retry. Refusing ` +
+      `to proxy to a server that may be serving an old build.`,
+  )
+  process.exit(1)
+}
+
 const nitro = spawn('node', [join(here, '..', '.output', 'server', 'index.mjs')], {
   env: { ...process.env, NITRO_PORT: String(NITRO_PORT), NITRO_HOST: '127.0.0.1' },
   stdio: ['ignore', 'inherit', 'inherit'],
 })
+
+// A nitro that crashes (e.g. cannot bind) must take this server down with
+// it — a proxy to a dead upstream only produces confusing 500s.
+nitro.on('exit', (code) => {
+  console.error(`e2e-server: nitro exited (code ${code}) — shutting down`)
+  process.exit(code ?? 1)
+})
+
+// The nitro child MUST die with this server: orphaned children keep the
+// port (and the old build) alive for the next run.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    nitro.kill(signal)
+    process.exit(0)
+  })
+}
 
 const seen = []
 

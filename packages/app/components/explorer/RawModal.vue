@@ -123,7 +123,7 @@ async function copyRow(lineId: number): Promise<void> {
 <template>
   <Modal :model-value="modelValue" title="Raw view" size="xl" @update:model-value="emit('update:modelValue', $event)">
     <div data-testid="raw-modal-body" class="flex flex-col gap-2">
-      <p v-if="!hasRows" data-testid="raw-empty" class="text-sm text-base-content/50 py-6 text-center">
+      <p v-if="!hasRows" data-testid="raw-empty" class="text-sm text-base-content/70 py-6 text-center">
         No rows in the current view.
       </p>
 
@@ -160,7 +160,7 @@ async function copyRow(lineId: number): Promise<void> {
               />
             </template>
             <template v-else>
-              <span class="w-16 shrink-0 text-right text-base-content/50 tabular-nums">
+              <span class="w-16 shrink-0 text-right text-base-content/70 tabular-nums">
                 {{ rowFor(item.index)!.lineId }}
               </span>
               <!-- Same escaped, byte-capped preview as the list. -->
@@ -181,7 +181,7 @@ async function copyRow(lineId: number): Promise<void> {
         </div>
       </div>
 
-      <p v-if="hasRows" class="text-xs text-base-content/50" data-testid="raw-footer">
+      <p v-if="hasRows" class="text-xs text-base-content/70" data-testid="raw-footer">
         {{ rowStore.totalFiltered }} rows in the current (filtered) view. Previews match the
         list (byte-capped, control characters escaped); Copy fetches the full row text.
       </p>

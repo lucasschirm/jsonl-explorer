@@ -31,6 +31,7 @@
     "vue-router": "4.6.4"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
     "@nuxt/eslint-config": "^0.3.0",
     "@nuxt/nitro-server": "3.21.11",
     "@nuxtjs/tailwindcss": "^6.10.0",

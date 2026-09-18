@@ -32,7 +32,9 @@ describe('Modal', () => {
 
     const modalBox = findModalInBody()
     expect(modalBox).not.toBeNull()
-    expect(modalBox?.querySelector('h3')?.textContent).toBe('Test Modal')
+    // h2 (TSK0052): the page h1 precedes the modal title in the heading
+    // hierarchy — h3 skipped a level and failed axe heading-order.
+    expect(modalBox?.querySelector('h2')?.textContent).toBe('Test Modal')
   })
 
   it('does not render when modelValue is false', () => {

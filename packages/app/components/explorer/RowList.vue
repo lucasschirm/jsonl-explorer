@@ -205,10 +205,10 @@ watch(
     <div
       v-if="!hasRows"
       data-testid="row-list-empty"
-      class="flex-1 flex items-center justify-center p-6 text-center text-sm text-base-content/50"
+      class="flex-1 flex items-center justify-center p-6 text-center text-sm text-base-content/70"
     >
       <p>No rows to show.</p>
-      <p class="text-xs mt-1 text-base-content/40">Rows appear as the index commits.</p>
+      <p class="text-xs mt-1 text-base-content/70">Rows appear as the index commits.</p>
     </div>
 
     <!-- Bounded DOM: only viewport + overscan rows exist in the tree. -->
@@ -230,40 +230,49 @@ watch(
           v-for="item in virtualizer.getVirtualItems()"
           :key="item.key"
           role="listitem"
-          data-testid="row-item"
-          class="absolute left-0 right-0 flex items-center gap-2 px-2 border-b border-base-300/40 font-mono text-xs cursor-pointer select-none"
-          :class="{ 'bg-primary/10': isSelected(item.index) }"
+          class="absolute left-0 right-0 border-b border-base-300/40"
           :style="{
             transform: `translateY(${item.start}px)`,
             height: `${props.rowHeight}px`,
           }"
-          @click="onRowClick(item.index)"
         >
-          <!-- Placeholder while the window is in flight (bounded, honest). -->
-          <template v-if="rowFor(item.index) === null">
-            <span class="w-14 shrink-0" />
-            <span
-              data-testid="row-placeholder"
-              class="block h-2 w-2/3 rounded bg-base-300/70 animate-pulse"
-            />
-          </template>
-          <template v-else>
-            <span class="w-14 shrink-0 text-right text-base-content/50 tabular-nums">
-              {{ rowFor(item.index)!.lineId }}
-            </span>
-            <!-- Preview is pre-escaped (C0/DEL) and capped: always one line. -->
-            <span class="truncate text-base-content/90" :data-line-id="rowFor(item.index)!.lineId">
-              {{ rowFor(item.index)!.text }}
-            </span>
-            <!-- TSK0030: the row text is a local edit override, not the source. -->
-            <span
-              v-if="rowFor(item.index)!.isEdited"
-              data-testid="row-edited-badge"
-              class="badge badge-xs badge-outline badge-warning shrink-0 font-sans"
-            >
-              edited
-            </span>
-          </template>
+          <!-- TSK0052: rows are real buttons — keyboard users tab through
+               them (Enter/Space selects). A role=listitem div with only a
+               click handler was unreachable without a pointer. -->
+          <button
+            type="button"
+            data-testid="row-item"
+            class="w-full h-full flex items-center gap-2 px-2 font-mono text-xs text-left cursor-pointer select-none"
+            :class="{ 'bg-primary/10': isSelected(item.index) }"
+            :aria-label="`Select row ${rowFor(item.index)?.lineId ?? item.index + 1}`"
+            @click="onRowClick(item.index)"
+          >
+            <!-- Placeholder while the window is in flight (bounded, honest). -->
+            <template v-if="rowFor(item.index) === null">
+              <span class="w-14 shrink-0" />
+              <span
+                data-testid="row-placeholder"
+                class="block h-2 w-2/3 rounded bg-base-300/70 animate-pulse"
+              />
+            </template>
+            <template v-else>
+              <span class="w-14 shrink-0 text-right text-base-content/70 tabular-nums">
+                {{ rowFor(item.index)!.lineId }}
+              </span>
+              <!-- Preview is pre-escaped (C0/DEL) and capped: always one line. -->
+              <span class="truncate text-base-content/90" :data-line-id="rowFor(item.index)!.lineId">
+                {{ rowFor(item.index)!.text }}
+              </span>
+              <!-- TSK0030: the row text is a local edit override, not the source. -->
+              <span
+                v-if="rowFor(item.index)!.isEdited"
+                data-testid="row-edited-badge"
+                class="badge badge-xs badge-outline badge-edited shrink-0 font-sans"
+              >
+                edited
+              </span>
+            </template>
+          </button>
         </div>
       </div>
     </div>

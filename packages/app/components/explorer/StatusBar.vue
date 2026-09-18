@@ -43,20 +43,22 @@ const stateText = computed((): string | null => {
 </script>
 
 <template>
-  <div class="p-3 border-t border-base-300 bg-base-200 text-xs text-base-content/70">
+  <!-- role=status (aria-live=polite): counts and state changes are
+       announced to screen readers (TSK0052). The region must exist
+       BEFORE its content changes — hence a permanent element. -->
+  <div role="status" class="p-3 border-t border-base-300 bg-base-200 text-xs text-base-content/70">
     <div class="flex items-center justify-between gap-2">
       <span>
         Total:
         <span class="font-mono" data-testid="total-count">{{ formatInt(totalRows) }}</span> rows
-        <span v-if="indexPartial" class="text-base-content/50" data-testid="partial-marker"
+        <span v-if="indexPartial" class="text-base-content/70" data-testid="partial-marker"
           >(indexing)</span>
       </span>
       <span>
         Filtered:
         <span class="font-mono" data-testid="filtered-count">{{ formatInt(filteredRows) }}</span> rows
       </span>
-      <span v-if="stateText" class="shrink-0 text-base-content/80" data-testid="state-text"
-        :aria-live="stateText ? 'polite' : undefined">{{ stateText }}</span>
+      <span v-if="stateText" class="shrink-0 text-base-content/80" data-testid="state-text">{{ stateText }}</span>
     </div>
   </div>
 </template>

@@ -185,7 +185,7 @@ const placeholder = computed(() =>
       <span v-if="filterStore.errorCount > 0" data-testid="filter-skipped">
         · {{ formatInt(filterStore.errorCount) }} skipped
       </span>
-      <span v-if="filterStore.isPartial" class="text-base-content/50" data-testid="filter-partial"
+      <span v-if="filterStore.isPartial" class="text-base-content/70" data-testid="filter-partial"
         >(indexing — will update)</span>
     </div>
 

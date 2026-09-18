@@ -111,7 +111,7 @@ function copyAll(): void {
 
       <!-- Text mode: count + prev/next (keyboard: Down/Up/Enter) -->
       <template v-if="searchStore.mode === 'text'">
-        <span class="text-xs text-base-content/60 tabular-nums" data-testid="detail-search-count">
+        <span class="text-xs text-base-content/70 tabular-nums" data-testid="detail-search-count">
           {{ countLabel }}
         </span>
         <button
@@ -217,7 +217,7 @@ function copyAll(): void {
       <div v-if="searchStore.jqPaneOpen" class="px-3 pb-2 max-h-80 overflow-auto font-mono text-xs">
         <p
           v-if="searchStore.jqState === 'done' && searchStore.jqOutputs.length === 0"
-          class="text-base-content/50 italic py-1"
+          class="text-base-content/70 italic py-1"
           data-testid="detail-search-jq-empty"
         >
           No output — the program produced nothing for this document.
@@ -240,7 +240,7 @@ function copyAll(): void {
             Copy
           </button>
         </div>
-        <p v-if="truncated" class="text-base-content/50 pt-1">
+        <p v-if="truncated" class="text-base-content/70 pt-1">
           …showing the first {{ OUTPUT_RENDER_CAP }} of {{ searchStore.jqOutputs.length }}
           outputs — “Copy all” copies every output.
         </p>
