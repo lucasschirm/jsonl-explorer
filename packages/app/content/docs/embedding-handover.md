@@ -25,6 +25,8 @@ const explorer = window.open('https://jsonlexplorer.lucasschirm.com/explorer', '
 
 ## Handover Protocol
 
+![The explorer waiting for handover data from its host](/screenshots/handover-light.png)
+
 After the explorer loads and announces readiness, send data via postMessage.
 **Validate on the sender side too**: exact origin AND exact window — the
 same trust boundary the explorer applies to you.

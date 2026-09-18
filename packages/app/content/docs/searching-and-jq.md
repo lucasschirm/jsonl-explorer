@@ -30,6 +30,8 @@ Switch the mode toggle to **jq** and type any jq program. Examples:
 - `select(.tags | index("important"))` — rows with an "important" tag
 - `. | length > 100` — objects with more than 100 top-level entries
 
+![A jq filter applied — 3 of 5 rows remain in the list](/screenshots/filtering-light.png)
+
 ### How jq Matching Works
 
 A row matches when the jq program produces **at least one output** that is

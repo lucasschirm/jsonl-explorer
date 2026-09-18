@@ -5,6 +5,8 @@ description: Navigate rows, select documents, use the JSON tree view with collap
 
 Once you've loaded a JSONL file, the explorer view provides two panels:
 
+![The explorer view: the row list (left), the JSON tree (right), and the status bar](/screenshots/exploring-light.png)
+
 ## Layout and minimum viewport
 
 The explorer is a split view: a fixed-width row list on the left and a

@@ -42,6 +42,8 @@ not the source bytes.
 
 ## Editing Values
 
+![An edited row — the edited badge in the list and detail panel, and the enabled Reset control](/screenshots/editing-light.png)
+
 The detail panel's tree is editable in place. Clicking a value opens a
 single-line editor seeded with the value's current JSON token:
 

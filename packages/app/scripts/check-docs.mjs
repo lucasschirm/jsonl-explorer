@@ -8,6 +8,7 @@
  * - a markdown LINK or IMAGE target is broken:
  *     /docs/<slug>      → the slug file must exist;
  *     /, /explorer, /about, /docs → the known app routes;
+ *     /screenshots/<f>  → the file must exist in public/screenshots/;
  *     other /…          → unknown app route (fail — no dead ends);
  *     relative          → the file must exist next to the guide;
  *     http(s)://, #…    → external / in-page (skipped).
@@ -22,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const DOCS = join(here, '..', 'content', 'docs')
+const SHOTS_DIR = join(here, '..', 'public', 'screenshots')
 const APP_ROUTES = new Set(['/', '/explorer', '/about', '/docs'])
 
 const errors = []
@@ -95,6 +97,11 @@ for (const file of files) {
       const linkSlug = noHash.slice('/docs/'.length)
       if (!files.includes(`${linkSlug}.md`)) {
         errors.push(`${file}: broken ${kind} /docs/${linkSlug} (no such guide)`)
+      }
+    } else if (noHash.startsWith('/screenshots/')) {
+      const shot = join(SHOTS_DIR, noHash.slice('/screenshots/'.length))
+      if (!shot.startsWith(SHOTS_DIR) || !existsSync(shot)) {
+        errors.push(`${file}: broken screenshot ${kind} ${noHash} (not in public/screenshots/)`)
       }
     } else if (noHash.startsWith('/')) {
       if (!APP_ROUTES.has(noHash)) {

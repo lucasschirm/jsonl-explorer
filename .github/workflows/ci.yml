@@ -167,6 +167,91 @@ jobs:
           path: packages/app/test-results/
           retention-days: 14
 
+  screenshots:
+    name: Screenshots (stale check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build app (screenshots capture the built output)
+        run: pnpm build
+
+      - name: Install Chromium
+        run: pnpm --filter jsonl-explorer-app exec playwright install --with-deps chromium
+
+      - name: Regenerate screenshots
+        run: pnpm screenshots
+
+      - name: Check the regenerated set (structure) + diff against committed
+        # Structural failures (missing/renamed images, wrong dimensions)
+        # fail the build. Pixel-level differences are EXPECTED across
+        # platforms (the committed set is a reference render; font
+        # rasterization differs per OS), so they are reported and the
+        # regenerated set is uploaded for VISUAL review in the PR — the
+        # documented review flow (TSK0050).
+        run: |
+          set -e
+          cd packages/app/public/screenshots
+          python3 - <<'PY'
+          import os, struct, sys
+          def png_size(path):
+              with open(path, 'rb') as f:
+                  data = f.read(33)
+              if data[:8] != b'\x89PNG\r\n\x1a\n':
+                  sys.exit(f'{path}: not a PNG')
+              w, h = struct.unpack('>II', data[16:24])
+              return w, h
+          files = sorted(f for f in os.listdir('.') if f.endswith('.png'))
+          expected = ['editing-dark.png','editing-light.png','exploring-dark.png','exploring-light.png','filtering-dark.png','filtering-light.png','handover-dark.png','handover-light.png','landing-dark.png','landing-light.png','url-modal-dark.png','url-modal-light.png']
+          missing = [f for f in expected if f not in files]
+          extra = [f for f in files if f not in expected]
+          if missing or extra:
+              sys.exit(f'screenshot set mismatch — missing: {missing}, extra: {extra}')
+          for f in files:
+              w, h = png_size(f)
+              if (w, h) != (1440, 900):
+                  sys.exit(f'{f}: expected 1440x900, got {w}x{h}')
+          print(f'screenshot structure OK ({len(files)} images, all 1440x900)')
+          PY
+          cd "$GITHUB_WORKSPACE"
+          echo '--- pixel comparison against the committed set (informational; cross-OS diffs are expected) ---'
+          identical=0; differ=0
+          for f in packages/app/public/screenshots/*.png;
+          do
+            b=$(basename "$f")
+            if git show --quiet -- "HEAD:packages/app/public/screenshots/$b" > "/tmp/committed-$b" 2>/dev/null && cmp -s "/tmp/committed-$b" "$f"; then
+              identical=$((identical+1))
+            else
+              differ=$((differ+1)); echo "  differs: $b (see uploaded artifact for visual review)"
+            fi
+          done
+          echo "pixel-identical: $identical, differs: $differ"
+
+      - name: Upload regenerated screenshots (visual review)
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-regenerated
+          path: packages/app/public/screenshots/
+          retention-days: 14
+
   verify-build-output:
     name: Verify Build Output
     runs-on: ubuntu-latest

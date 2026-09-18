@@ -30,8 +30,11 @@ jsonlex data.jsonl
 - Generates a cryptographically random 256-bit capability token per run
 - Serves only `/{capability}/file.jsonl` (GET/HEAD, RFC 7233 ranges)
 - Opens `https://jsonlexplorer.lucasschirm.com/?url=...` in the browser
+  (the explorer loads the file straight away — same view as a local file)
 - If no browser can be opened (headless environments), the CLI warns and
   keeps serving — the URL above is still usable
+
+![The explorer view the CLI opens, with the file loaded](/screenshots/exploring-light.png)
 
 **Security**: The capability token is the authorization — a wrong token is
 just an unknown route (404, no metadata, no timing side channel). CORS on

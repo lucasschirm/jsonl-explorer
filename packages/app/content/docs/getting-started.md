@@ -5,6 +5,8 @@ description: Learn how to open JSONL files using drag-and-drop, file picker, or 
 
 JSONL Explorer makes it easy to open and explore JSONL files. You can load files in three ways:
 
+![The landing page: drag-and-drop zone and the Open from URL dialog trigger](/screenshots/landing-light.png)
+
 ## Drag and Drop
 
 Simply drag a `.jsonl`, `.json`, `.ndjson`, or `.txt` file onto the landing page drop zone. The file will be processed entirely in your browser.
@@ -15,7 +17,9 @@ Click the drop zone to open your system's file picker and select a file.
 
 ## Open from URL
 
-Click "Open from URL" to load a JSONL file from a public HTTP/HTTPS endpoint. You can also specify custom headers (e.g., for authentication).
+Click "Open from URL" to load a JSONL file from a public HTTP/HTTPS endpoint. You can also specify custom headers (e.g., for authentication):
+
+![The Open from URL dialog: URL input plus custom header rows](/screenshots/url-modal-light.png)
 
 ### URL rules
 

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Handover host (waiting)</title>
+  </head>
+  <body>
+    <h1>Handover host (no load — screenshot of the waiting state)</h1>
+    <p>
+      Opens the explorer via window.open and deliberately sends NO load, so
+      the explorer stays in its "waiting for data" state.
+    </p>
+    <button id="go">Open explorer</button>
+    <script>
+      document.getElementById('go').addEventListener('click', () => {
+        window.open(location.origin + '/explorer', 'jsonlexplorer', 'width=1100,height=800')
+      })
+    </script>
+  </body>
+</html>
