@@ -26,7 +26,9 @@ jobs:
   full-suite:
     name: Unit + Build + E2E (Chromium & WebKit smoke)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 40 was tight before the perf suites (TSK0053 added a 100 MiB budget
+    # run + a 2 GiB soak); 60 keeps a margin for slow CI runners.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,10 +63,29 @@ jobs:
       - name: Install Chromium + WebKit
         run: pnpm --filter jsonl-explorer-app exec playwright install --with-deps chromium webkit
 
-      - name: Run E2E (Chromium full + WebKit smoke)
+      - name: Run E2E (Chromium full + WebKit smoke + 100 MiB perf budgets)
+        # E2E_INCLUDE_PERF adds the 100 MiB streaming budget suite
+        # (index/filter/DOM-bounds/heap/cancellation/export) — scheduled
+        # only, so PR runs stay fast. Budgets are provisional (TSK0053):
+        # docs/perf-baselines.md tracks the measured numbers.
         env:
           E2E_INCLUDE_WEBKIT: '1'
+          E2E_INCLUDE_PERF: '1'
         run: pnpm test:e2e
+
+      - name: Multi-GB soak (2 GiB stream, artifacts)
+        # Streams 2 GiB from the fixture server into the built app,
+        # exercises filter/DOM/export/cancellation at scale, writes a
+        # JSON artifact, cleans OPFS. Exits non-zero on invariant failure.
+        run: pnpm --filter jsonl-explorer-app perf:soak
+
+      - name: Upload perf artifacts (soak metrics)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-soak-artifacts-scheduled
+          path: packages/app/artifacts/
+          retention-days: 30
 
       - name: Upload E2E artifacts (traces/screenshots)
         if: failure()

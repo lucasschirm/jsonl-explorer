@@ -208,9 +208,9 @@ describe('FilterEngine edit overrides (TSK0026)', () => {
     const res = await engine.filter('text', 'patched')
     expect(res.matchedRows).toBe(1)
     expect(engine.rowAt(0)).toBe(0)
-    // Row 1 never hit the source (override decided the match).
+    // Row 0 is edited (lineId 1) — the override decided its match, so
+    // only the chunk covering unedited row 1 was read: exactly one call.
     expect(readRange).toHaveBeenCalledTimes(1)
-    expect(readRange.mock.calls[0]![0]).toBeGreaterThan(0)
 
     // The original text no longer matches row 1 (override replaces it).
     const original = await engine.filter('text', 'original')
@@ -267,7 +267,9 @@ describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {
   const MANY = Array.from({ length: 1500 }, (_, i) => (i % 3 === 0 ? '{"t":"x"}' : '{"t":"y"}'))
 
   it('a cancelled scan keeps the previous view untouched', async () => {
-    const { engine } = makeEngine(MANY, { readDelayMs: 0.5 })
+    // Chunked reads mean one delayed read per scan; make that read slow
+    // enough that a cancel inside it always lands mid-scan.
+    const { engine } = makeEngine(MANY, { readDelayMs: 200 })
 
     const first = await engine.filter('text', 'x')
     const firstCount = first.matchedRows
@@ -276,9 +278,9 @@ describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {
 
     const pending = engine.filter('text', 'zz-absent')
     const rejected = expect(pending).rejects.toThrow(FilterCancelledError)
-    // Let the new scan spin a few rows. The margin is deliberate: the
-    // minimum scan duration here is ~1500 x 0.5ms = 750ms, so a cancel
-    // within this window always lands mid-scan (cooperative check).
+    // Let the new scan start its (slow) chunk read; the cancel lands
+    // while the read is in flight — the cooperative check after it
+    // aborts the scan.
     await new Promise((r) => setTimeout(r, 25))
     engine.cancel()
     await rejected
@@ -293,7 +295,9 @@ describe('FilterEngine atomic swap and cancellation (TSK0026)', () => {
   }, 30_000) // full-scan cancellation test: budget for loaded CI hosts
 
   it('a newer filter supersedes the in-flight one (stale operation)', async () => {
-    const { engine } = makeEngine(MANY, { readDelayMs: 0.5 })
+    // Slow chunk read: the stale scan is parked in it when the fresh one
+    // bumps the token.
+    const { engine } = makeEngine(MANY, { readDelayMs: 200 })
     await engine.filter('text', 'x')
 
     const stale = engine.filter('text', 'y')
@@ -517,7 +521,8 @@ describe('FilterEngine jq row-error summary + clear (TSK0028)', () => {
 
   it('clear() aborts an in-flight scan; its swap never lands', async () => {
     const rows = Array.from({ length: 1500 }, (_, i) => (i % 3 === 0 ? 'x' : 'y'))
-    const { engine } = makeJqEngine(rows, { readDelayMs: 0.5 })
+    // Slow chunk read so the scan is still in flight when clear() lands.
+    const { engine } = makeJqEngine(rows, { readDelayMs: 200 })
 
     // A text scan is in flight (no filter has completed yet).
     const pending = engine.filter('text', 'x')
@@ -704,3 +709,34 @@ describe('FilterEngine.applyEdit single-row re-evaluation (TSK0030)', () => {
   })
 })
 
+
+describe('FilterEngine chunked source reads (TSK0053)', () => {
+  it('reads the spool in aligned chunks, not one readRange per row', async () => {
+    // ~20k small rows = ~1.3 MiB. A per-row reader would issue 20k spool
+    // round-trips (minutes on OPFS); the chunk cache reads aligned 2 MiB
+    // spans, so the whole file is ONE read.
+    const rows = Array.from({ length: 20_000 }, (_, i) => `{"i":${i},"pad":"${'x'.repeat(48)}"}`)
+    const { engine, readRange } = makeEngine(rows)
+
+    const res = await engine.filter('text', '"i":7')
+    expect(res.matchedRows).toBeGreaterThan(0)
+    expect(readRange).toHaveBeenCalledTimes(1)
+    expect(readRange.mock.calls[0]![0]).toBe(0)
+    expect(readRange.mock.calls[0]![1]).toBe(2 * 1024 * 1024)
+  })
+
+  it('fetches a longer span when a row crosses the chunk boundary', async () => {
+    // One row straddling the 1 MiB boundary: the cache must read a span
+    // covering the whole row, not a truncated chunk.
+    const before = 'a'.repeat(1024 * 1024 - 5)
+    const rows = [before + 'NEEDLE' + '\n'.repeat(0), 'tail']
+    // Layout: row 0 spans offsets 0..1MiB-5+6 (crosses 1MiB).
+    const { engine, readRange } = makeEngine(rows)
+    const res = await engine.filter('text', 'NEEDLE')
+    expect(res.matchedRows).toBe(1)
+    const first = readRange.mock.calls[0]!
+    // The aligned span (start 0) covers the entire crossing row.
+    expect(first[0]).toBe(0)
+    expect(first[1]).toBeGreaterThan(1024 * 1024)
+  })
+})

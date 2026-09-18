@@ -12,12 +12,19 @@
  *   the test process;
  * - generates controlled DATA endpoints under `/e2e-fixture/*` (nothing
  *   large is committed — bodies are produced on demand):
- *     /e2e-fixture/jsonl?rows=N&delayMs=M[&gzip=1][&chunked=1][&lie-length=1]
- *       N JSONL rows; per-chunk delay; gzip content-encoding; chunked
- *       (no Content-Length); lie-length = the server advertises HALF the
- *       real body size (a buggy/lying Content-Length — the client must
- *       handle the truncated transfer without hanging; a LARGER lie would
- *       stall the TCP transfer itself and is not representable);
+ *     /e2e-fixture/jsonl — true streaming: rows are generated and written
+ *       one at a time (nothing large accumulates in server memory), so
+ *       `bytes=` can target multi-GB transfers for perf/soak runs.
+ *       Query: rows=N (exact row count, classic mode, ≤ 100k) OR
+ *       bytes=B (stream until ≥ B bytes, ≤ 8 GiB) [&rowBytes=R (pad rows
+ *       to exactly R bytes, ≤ 512 KiB — makes `bytes=` yield an exact
+ *       size)] [&delayMs=M (sleep M ms every 2 KiB of plain data)]
+ *       [&gzip=1 (streaming content-encoding)] [&chunked=1 (no
+ *       Content-Length)] [&lie-length=1, rows mode only: the server
+ *       advertises HALF the real body size — a buggy/lying
+ *       Content-Length; the client must handle the truncated transfer
+ *       without hanging; a LARGER lie would stall the TCP transfer
+ *       itself and is not representable];
  *     /e2e-fixture/headers — echoes selected request headers (JSON);
  *     /e2e-fixture/redirect?to=<url>&hops=N — N-hop 302 chain;
  *     /e2e-fixture/error?status=404|500 — typed error responses;
@@ -30,7 +37,7 @@
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
-import { gzipSync } from 'node:zlib'
+import { createGzip } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -193,9 +200,37 @@ function intParam(params, name, fallback, max = Number.MAX_SAFE_INTEGER) {
   return value
 }
 
-/** One JSONL row: small, stable, ~60-80 bytes. */
-function fixtureRow(i) {
-  return Buffer.from(`{"i":${i},"pad":"${'x'.repeat(48)}"}\n`)
+/**
+ * One JSONL row. Without rowBytes: small, stable, ~60-80 bytes (the
+ * classic fixture shape). With rowBytes>0: padded to EXACTLY rowBytes so
+ * a `bytes=` target yields a predictable total size (perf budgets / soak).
+ */
+function fixtureRow(i, rowBytes) {
+  if (rowBytes === undefined || rowBytes <= 0) {
+    return Buffer.from(`{"i":${i},"pad":"${'x'.repeat(48)}"}\n`)
+  }
+  const base = Buffer.byteLength(`{"i":${i},"pad":"`)
+  const tail = Buffer.byteLength('"}\n')
+  const pad = Math.max(0, rowBytes - base - tail)
+  return Buffer.from(`{"i":${i},"pad":"${'x'.repeat(pad)}"}\n`)
+}
+
+/**
+ * EXACT total body length for rows mode. Row length varies with the
+ * digit count of i (`"i":99999` is 5 bytes wider than `"i":0`) — a
+ * `rows * fixtureRow(0).length` assumption declares a Content-Length
+ * that is too SHORT and truncates the body mid-row (caught by TSK0053).
+ * With rowBytes>0 every row is exactly rowBytes (the padding absorbs
+ * the digit-count difference), so the total is uniform.
+ */
+function exactRowsLength(rows, rowBytes) {
+  let total = 0
+  for (let i = 0; i < rows; i++) {
+    const base = Buffer.byteLength(`{"i":${i},"pad":"`)
+    const tail = Buffer.byteLength('"}\n')
+    total += rowBytes > 0 ? Math.max(rowBytes, base + tail) : base + tail + 48
+  }
+  return total
 }
 
 function sleep(ms) {
@@ -207,48 +242,101 @@ async function handleFixture(url, req, res) {
   const params = url.searchParams
 
   if (name === 'jsonl') {
-    const rows = intParam(params, 'rows', 10, MAX_FIXTURE_ROWS)
+    // TSK0053: TRUE streaming — rows are generated and written one at a
+    // time; nothing is accumulated in server memory, so `bytes=` can be
+    // multi-GB. `rows=` keeps the classic small-fixture semantics.
+    const rows = intParam(params, 'rows', 0, MAX_FIXTURE_ROWS)
+    const targetBytes = intParam(params, 'bytes', 0, 8 * 1024 * 1024 * 1024)
+    const rowBytes = intParam(params, 'rowBytes', 0, 512 * 1024)
     const delayMs = intParam(params, 'delayMs', 0, 10_000)
     const gzip = params.get('gzip') === '1'
     const chunked = params.get('chunked') === '1'
     const lieLength = params.get('lie-length') === '1'
 
-    // Build the logical body, then optionally compress. Chunk size is
-    // fixed so slow streams interleave with the indexer deterministically.
-    const chunks = []
-    const CHUNK_ROWS = 5
-    for (let i = 0; i < rows; i += CHUNK_ROWS) {
-      const part = []
-      for (let j = i; j < Math.min(i + CHUNK_ROWS, rows); j++) part.push(fixtureRow(j))
-      chunks.push(Buffer.concat(part))
-    }
-    const plain = Buffer.concat(chunks)
-    const body = gzip ? gzipSync(plain) : plain
+    if (rows === 0 && targetBytes === 0) rows = 10 // classic default
 
     const headers = { 'content-type': 'application/jsonl' }
     if (gzip) headers['content-encoding'] = 'gzip'
-    if (!chunked) {
-      // lie-length: advertise HALF the real size — a buggy server. The
-      // client reads the first half and the connection closes; the app
-      // must index what arrived without hanging or erroring.
-      headers['content-length'] = lieLength ? Math.floor(body.length / 2) : body.length
+    // Content-Length is only knowable in advance in rows mode (the
+    // bytes mode stops mid-allocation at >= target). lie-length stays a
+    // rows-mode feature: advertise HALF the real size (a buggy server);
+    // the client must index what arrived without hanging or erroring.
+    let declaredLength = null
+    if (!gzip && !chunked && rows > 0) {
+      const exact = exactRowsLength(rows, rowBytes)
+      declaredLength = lieLength ? Math.floor(exact / 2) : exact
+      headers['content-length'] = declaredLength
     }
     res.writeHead(200, headers)
-    if (body.length === 0) {
+
+    // Client-disconnect detection (TSK0053). The reliable signal is the
+    // RESPONSE's 'close' before the response ended: the connection went
+    // away. (req.aborted is deprecated and misfires; req's 'close' fires
+    // when the REQUEST body is done — immediately for a body-less GET —
+    // so neither works here.)
+    let clientGone = false
+    res.on('close', () => {
+      if (!res.writableEnded) clientGone = true
+    })
+
+    // NOTE: stream.pipe(res) returns the DESTINATION — keep the gzip
+    // stream itself if we want compressed output.
+    let out
+    if (gzip) {
+      const gz = createGzip()
+      gz.pipe(res) // pipe also ends res when gz finishes
+      out = gz
+    } else {
+      out = res
+    }
+    let written = 0
+    let sinceSleep = 0
+    for (let i = 0; ; i++) {
+      if (clientGone) return
+      if (rows > 0 && i >= rows) break
+      if (targetBytes > 0 && written >= targetBytes) break
+      const row = fixtureRow(i, rowBytes)
+      written += row.length
+      sinceSleep += row.length
+      // Honor backpressure: ignoring write()'s return value clogs the
+      // socket write queue and kills ~80 MiB+ transfers with EINVAL
+      // (TSK0053). 'drain' fires when the stream accepts data again —
+      // for the gzip stream, pipe() propagates res backpressure into it.
+      if (!out.write(row)) {
+        // 'close' too: if the client disconnects while we are parked on
+        // backpressure, 'drain' never fires and we would hang. Both
+        // handlers must remove each other — a once('close') that never
+        // fires would leak one listener per backpressure stall (11 in a
+        // 200 MiB stream triggered Node's MaxListeners warning, TSK0053).
+        await new Promise((resolve) => {
+          const onDrain = () => {
+            out.off('close', onClose)
+            resolve()
+          }
+          const onClose = () => {
+            out.off('drain', onDrain)
+            resolve()
+          }
+          out.once('drain', onDrain)
+          out.once('close', onClose)
+        })
+      }
+      // Sleep cadence = every 2 KiB of plain data: identical pacing to
+      // the pre-TSK0053 sliced writer (existing timing tests rely on it).
+      if (delayMs > 0 && sinceSleep >= 2048) {
+        sinceSleep = 0
+        await sleep(delayMs)
+      }
+      if (rows === 0 && targetBytes === 0) break
+    }
+    if (gzip) {
+      // Flush + finish the gzip stream, then end the response.
+      await new Promise((resolve) => {
+        out.end(resolve)
+      })
+    } else {
       res.end()
-      return
     }
-    // Stream in slices so delayMs produces real mid-stream waits.
-    // Small slices: delayMs produces real mid-stream waits even for
-    // modest bodies (clients see 'complete' once all Content-Length bytes
-    // arrived, so single-large-chunk bodies would never wait).
-    const SLICE = 2 * 1024
-    for (let offset = 0; offset < body.length; offset += SLICE) {
-      if (req.aborted) return
-      res.write(body.subarray(offset, Math.min(offset + SLICE, body.length)))
-      if (delayMs > 0) await sleep(delayMs)
-    }
-    res.end()
     return
   }
 

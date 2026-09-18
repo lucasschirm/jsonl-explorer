@@ -35,6 +35,18 @@ import type { JqRuntimeLike } from './jq.js'
 /** Rows per progress emission (time-throttled further by the caller). */
 export const PROGRESS_INTERVAL_ROWS = 1000
 
+/**
+ * Sequential read chunk for scans (TSK0053). One `readRange` per row is
+ * ~0.3 ms on an OPFS spool — 400k rows meant ~140 s for a text filter.
+ * Chunking aligned to the 1 MiB OPFS part size turns N spool round-trips
+ * into ~N/4096; the scan walks rows in order, so chunks stay hot. Reads
+ * span TWO chunks so a row crossing a part boundary is covered by the
+ * same read (no re-fetch).
+ */
+export const SCAN_CHUNK_BYTES = 1024 * 1024
+
+const EMPTY_BYTES = new Uint8Array(0)
+
 /** Thrown when a filter scan is cancelled or superseded. */
 export class FilterCancelledError extends Error {
   constructor(message = 'Filter cancelled') {
@@ -109,12 +121,6 @@ interface FilterState {
   errorFlags: Uint8Array | null
   /** One-line summary of the first row error (null when none). */
   errorSummary: string | null
-}
-
-function decodeForFilter(bytes: Uint8Array): string {
-  // Replacement-character decoding (U+FFFD), never throws: the filter must
-  // match what the UI shows for invalid-UTF-8 rows.
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
 }
 
 function binarySearchRow(rows: Uint32Array, count: number, rowId: number): number {
@@ -352,6 +358,11 @@ export class FilterEngine {
   async filter(kind: 'text' | 'jq', query: string): Promise<FilterScanResult> {
     const token = ++this.scanToken
     this.state.cancelled = false
+    // A fresh scan starts with a cold chunk cache: scans are the cache's
+    // only consumer, and a cold start per scan keeps scan timing uniform
+    // (cancellation/supersede tests rely on an in-flight read).
+    this.chunkBytes = null
+    this.chunkStart = -1
     let jqProgram: string | null = null
     const totalRows = this.indexer.getCommittedRows()
     const partial = !this.isIndexComplete()
@@ -388,6 +399,11 @@ export class FilterEngine {
       errorSummary: buffer.firstError ?? undefined,
     }
   }
+
+  /** Row bytes served from the 1 MiB-aligned chunk cache (see readRowBytes). */
+  private chunkStart = -1
+  private chunkBytes: Uint8Array | null = null
+  private readonly textDecoder = new TextDecoder('utf-8', { fatal: false })
 
   /** Literal text scan: one decoded row per iteration. */
   private async scanTextRows(
@@ -476,6 +492,39 @@ export class FilterEngine {
   }
 
   /**
+   * Row bytes via aligned sequential chunk reads (TSK0053): a per-row
+   * `readRange` is a full spool round-trip (~0.3 ms on OPFS) — 400k rows
+   * meant minutes. A scan walks rows in order, so one cached read
+   * (aligned to the OPFS part size, spanning two parts) covers ~8k rows;
+   * a row longer than the span fetches exactly its own length. Source
+   * bytes are immutable (edits live in the override map), so the cache
+   * never needs invalidation.
+   */
+  private async readRowBytes(rowIndex: number): Promise<Uint8Array> {
+    const lineStart = this.indexer.getLineStart(rowIndex)
+    const lineEnd = this.indexer.getLineEnd(rowIndex)
+    const length = lineEnd - lineStart + 1
+    if (length <= 0) return EMPTY_BYTES
+    const covered =
+      this.chunkBytes !== null &&
+      lineStart >= this.chunkStart &&
+      lineEnd < this.chunkStart + this.chunkBytes.length
+    if (!covered) {
+      const start = Math.floor(lineStart / SCAN_CHUNK_BYTES) * SCAN_CHUNK_BYTES
+      const span =
+        lineEnd >= start + 2 * SCAN_CHUNK_BYTES
+          ? lineEnd - start + 1 // a single row longer than the span
+          : 2 * SCAN_CHUNK_BYTES
+      this.chunkBytes = await this.source.readRange(start, span)
+      this.chunkStart = start
+    }
+    return this.chunkBytes!.subarray(
+      lineStart - this.chunkStart,
+      lineEnd - this.chunkStart + 1,
+    )
+  }
+
+  /**
    * Display text of a row for the text scan: edit override when present,
    * else the source bytes. Blank rows decode to '' (they match the empty
    * query and only it).
@@ -483,12 +532,7 @@ export class FilterEngine {
   private async rowText(rowIndex: number): Promise<string> {
     const override = this.getEditOverride(rowIndex + 1)
     if (override !== null) return override
-    const lineStart = this.indexer.getLineStart(rowIndex)
-    const lineEnd = this.indexer.getLineEnd(rowIndex)
-    const length = lineEnd - lineStart + 1
-    if (length <= 0) return ''
-    const bytes = await this.source.readRange(lineStart, length)
-    return decodeForFilter(bytes)
+    return this.textDecoder.decode(await this.readRowBytes(rowIndex))
   }
 
 
