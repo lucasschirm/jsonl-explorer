@@ -54,6 +54,12 @@ jobs:
         # doc links/images (TSK0048).
         run: pnpm --filter jsonl-explorer-app check:docs
 
+      - name: Check dependency credits (license policy + staleness)
+        # Regenerates the credits from the lockfile + installed metadata.
+        # FAILS on a dependency with missing/forbidden license metadata or
+        # a stale generated file (TSK0051).
+        run: pnpm --filter jsonl-explorer-app check:credits
+
   test:
     name: Unit Tests
     runs-on: ubuntu-latest

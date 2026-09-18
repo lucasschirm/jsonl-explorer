@@ -19,7 +19,7 @@
     "generate:app": "pnpm --filter=jsonl-explorer-app generate",
     "screenshots": "pnpm --filter=jsonl-explorer-app screenshots",
     "cli:pack": "pnpm --filter=jsonlex pack",
-    "ci": "pnpm lint && pnpm typecheck && pnpm --filter jsonl-explorer-app check:docs && pnpm test && pnpm build && pnpm test:e2e"
+    "ci": "pnpm lint && pnpm typecheck && pnpm --filter jsonl-explorer-app check:docs && pnpm --filter jsonl-explorer-app check:credits && pnpm test && pnpm build && pnpm test:e2e"
   },
   "engines": {
     "node": ">=20.11.0",

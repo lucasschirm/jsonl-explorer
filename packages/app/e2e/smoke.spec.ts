@@ -28,6 +28,21 @@ test.describe('app smoke', () => {
     await expect(page.locator('article')).toBeVisible()
   })
 
+  test('about page renders generated credits + privacy sections', async ({ page }) => {
+    await page.goto('/about')
+    await expect(page.locator('main h1')).toHaveText('About JSONL Explorer')
+    // Generated credits: the table row count matches the generated JSON
+    // (TSK0051) — assert the direct deps are present, not a placeholder.
+    const rows = page.locator('table tbody tr')
+    await expect(rows.first()).toBeVisible()
+    expect(await rows.count()).toBeGreaterThanOrEqual(100)
+    await expect(page.locator('table a[href*="jq-web"]')).toBeVisible()
+    await expect(page.locator('table a[href*="lucide"]')).toBeVisible()
+    // Privacy section distinguishes the browser app from the optional CLI.
+    await expect(page.locator('main')).toContainText('local-only by design')
+    await expect(page.locator('main')).toContainText('127.0.0.1')
+  })
+
   test('explorer route renders its empty state (no file, standalone)', async ({ page }) => {
     // Standalone (no opener/parent): the page redirects to the landing with
     // a toast — assert we land somewhere useful, not an error page.

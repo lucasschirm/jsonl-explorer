@@ -1,6 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    // Tests import the plain-node .mjs scripts (license policy); allowJs
+    // lets tsc INFER their types without checking them (checkJs stays off).
+    "allowJs": true,
     "paths": {
       "~/*": ["./*"],
       "~/engine": ["engine/index"]

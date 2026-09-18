@@ -119,6 +119,33 @@ for (const file of files) {
   }
 }
 
+// --- About page: static hrefs must be external or known app routes -------
+const ABOUT_PAGE = join(here, '..', 'pages', 'about.vue')
+if (existsSync(ABOUT_PAGE)) {
+  const aboutSource = readFileSync(ABOUT_PAGE, 'utf8')
+  const aboutDir = dirname(ABOUT_PAGE)
+  // (?<!:) excludes Vue's `:href="..."` bindings (generated data — the
+  // credits generator validates those URLs).
+  const hrefRe = /(?<!:)href="([^"]+)"/g
+  let m
+  while ((m = hrefRe.exec(aboutSource)) !== null) {
+    const target = m[1]
+    if (target.startsWith(':') || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('#')) continue
+    const noHash = target.split('#')[0]
+    if (noHash === '') continue
+    if (noHash.startsWith('/')) {
+      if (!APP_ROUTES.has(noHash)) {
+        errors.push(`about.vue: unknown app route href ${noHash}`)
+      }
+    } else {
+      const abs = resolve(aboutDir, noHash)
+      if (!abs.startsWith(resolve(aboutDir)) || !existsSync(abs)) {
+        errors.push(`about.vue: broken href ${noHash}`)
+      }
+    }
+  }
+}
+
 console.log(`docs: ${files.length} guides — ${files.map((f) => `/docs/${f.replace(/\.md$/, '')}`).join(', ')}`)
 if (errors.length > 0) {
   console.error(`\ncheck:docs FAILED (${errors.length}):`)
