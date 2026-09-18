@@ -229,6 +229,51 @@ describe('OpfsSpool', () => {
     await spool.dispose()
   })
 
+  it('flushes with a NON-EMPTY pending buffer at the correct logical offset', async () => {
+    // Regression (TSK0047): with sub-part-size appends, the pending buffer
+    // is non-empty when a part flush happens. The part's logical offset is
+    // `size - pending.length` (where the pending region starts), NOT `size`:
+    // recording it at `size` shifted the part forward by pending.length and
+    // made readRange serve the part's head bytes a second time, so the
+    // worker re-fed those rows to the scanner (20,097 rows for a
+    // 20,000-row URL load in the e2e suite).
+    const { root } = makeFakeStorage()
+    const spool = await OpfsSpool.create('spool-pending.jsonl', {
+      rootDirectory: root as unknown as FileSystemDirectoryHandle,
+    })
+    // 700 KB + 700 KB: the second append flushes a part while 700 KB of
+    // pending bytes precede it in the stream.
+    const data = patternBytes(2 * 700_000)
+    await spool.append(data.slice(0, 700_000))
+    expect(root.entries.size).toBe(0) // nothing flushable yet
+    await spool.append(data.slice(700_000))
+    expect(root.entries.size).toBe(1)
+
+    // The part file holds the FIRST 1 MiB of the stream (pending head +
+    // part of the chunk), regardless of when it was flushed.
+    const part0 = root.entries.get('spool-pending.jsonl-p0') as unknown as {
+      data: Uint8Array
+    }
+    expect(bytesEqual(part0.data, data.slice(0, PART))).toBe(true)
+
+    // Byte-exact reads: the pending region, the part/pending seam, the
+    // part boundary, the tail, and the WHOLE stream (this last one is the
+    // exact pattern the indexer's incremental feed performs).
+    expect(bytesEqual(await spool.readRange(0, 700_000), data.slice(0, 700_000))).toBe(true)
+    expect(
+      bytesEqual(
+        await spool.readRange(700_000 - 512, 1024),
+        data.slice(700_000 - 512, 700_000 + 512),
+      ),
+    ).toBe(true)
+    expect(bytesEqual(await spool.readRange(PART - 16, 32), data.slice(PART - 16, PART + 16))).toBe(
+      true,
+    )
+    expect(bytesEqual(await spool.readRange(PART, 2 * 700_000 - PART), data.slice(PART))).toBe(true)
+    expect(bytesEqual(await spool.readRange(0, data.length), data)).toBe(true)
+    await spool.dispose()
+  })
+
   it('a single chunk larger than one part produces multiple parts', async () => {
     const { root } = makeFakeStorage()
     const spool = await OpfsSpool.create('spool-big.jsonl', {

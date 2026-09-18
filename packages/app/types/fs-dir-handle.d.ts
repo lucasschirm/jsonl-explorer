@@ -11,6 +11,8 @@ declare global {
   interface FileSystemDirectoryHandle {
     /** Async iterator over the directory's entries. */
     values(): AsyncIterableIterator<FileSystemHandle>
+    /** Async iterator over the directory's entry names. */
+    keys(): AsyncIterableIterator<string>
   }
 }
 

@@ -115,12 +115,19 @@ export class OpfsSpool implements ByteSpool {
     this.assertActive()
     if (this.sealed) throw new SpoolSealedError(this.artifactName)
     if (chunk.length === 0) return
+    // The buffer starts where the pending region starts in the logical
+    // stream — NOT at this.size: the pending bytes were already written
+    // at earlier offsets. Recording a part at this.size would shift it by
+    // pending.length and make readRange serve its head bytes twice (the
+    // worker would re-feed those rows to the scanner — TSK0047 e2e caught
+    // 20,097 rows for a 20,000-row file).
+    const bufferStart = this.size - BigInt(this.pending.length)
     let buffer = this.pending.length === 0 ? chunk : concat(this.pending, chunk)
-    let written = 0n // bytes flushed by THIS append (part offsets)
+    let flushed = 0n // bytes flushed by THIS append (part offsets)
     while (buffer.length >= OPFS_PART_SIZE_BYTES) {
       const part = buffer.subarray(0, OPFS_PART_SIZE_BYTES)
-      await this.flushPart(part, this.size + written)
-      written += BigInt(part.length)
+      await this.flushPart(part, bufferStart + flushed)
+      flushed += BigInt(part.length)
       // Copy the remainder: releases the flushed bytes from memory.
       buffer = buffer.slice(OPFS_PART_SIZE_BYTES)
     }

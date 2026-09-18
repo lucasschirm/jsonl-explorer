@@ -19,13 +19,21 @@ const REASON_TEXT: Record<UrlFallbackConfirmRequest['reason'], string> = {
 </script>
 
 <template>
+  <!--
+    z-[1000] (above daisyUI's .modal z-index:999): this dialog can appear
+    while the URL-open modal is still open (the consent fires mid-download).
+    Both are teleported to body, so with equal z-index DOM order decides —
+    and this one mounts with app.vue, BEFORE the URL modal — leaving its
+    buttons under the URL modal's backdrop (unclickable in a real browser;
+    the TSK0047 e2e caught it).
+  -->
   <Teleport to="body">
     <div
       v-if="request"
       role="dialog"
       aria-modal="true"
       aria-labelledby="fallback-confirm-title"
-      class="modal modal-open"
+      class="modal modal-open z-[1000]"
     >
       <div class="modal-box max-w-lg">
         <h2 id="fallback-confirm-title" class="text-lg font-bold">Confirm memory fallback</h2>

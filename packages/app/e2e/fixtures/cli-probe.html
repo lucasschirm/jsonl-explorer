@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>CLI probe (different origin)</title>
+  </head>
+  <body>
+    <p>hostile probe page on a DIFFERENT loopback origin than the CLI server</p>
+    <pre id="probe-result" data-testid="probe-result">pending</pre>
+    <script>
+      // Attempts to READ the CLI capability file from this foreign origin.
+      // Expected: the browser blocks it (no CORS grant) and the page shows
+      // a visible error — never the file content.
+      const target = new URLSearchParams(location.search).get('target') ?? ''
+      const out = document.getElementById('probe-result')
+      ;(async () => {
+        try {
+          const res = await fetch(target)
+          const text = await res.text()
+          out.textContent = `ok status=${res.status} body=${text.slice(0, 80)}`
+        } catch (e) {
+          out.textContent = `blocked: ${e instanceof Error ? e.name : 'unknown'}`
+        }
+      })()
+    </script>
+  </body>
+</html>

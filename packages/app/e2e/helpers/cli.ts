@@ -25,6 +25,13 @@ export interface CliHandle {
   close(): Promise<void>
 }
 
+export interface LaunchCliOptions {
+  /** `--local` (default): same-origin policy, serves the static site.
+   *  Remote mode: hosted-origin policy (capability + PNA headers only —
+   *  the hosted app itself is out of reach in e2e). */
+  local?: boolean
+}
+
 export function findFreePort(): Promise<number> {
   return new Promise((resolvePort, rejectPort) => {
     const srv = createNetServer()
@@ -36,10 +43,11 @@ export function findFreePort(): Promise<number> {
   })
 }
 
-export async function launchCli(file: string, port: number): Promise<CliHandle> {
-  const child: ChildProcess = spawn(process.execPath, [CLI_BIN, file, '--local', '--no-open', '--port', String(port)], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+export async function launchCli(file: string, port: number, options: LaunchCliOptions = {}): Promise<CliHandle> {
+  const local = options.local ?? true
+  const args = [CLI_BIN, file, '--no-open', '--port', String(port)]
+  if (local) args.splice(1, 0, '--local')
+  const child: ChildProcess = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
   let buffer = ''
   child.stdout?.on('data', (d) => (buffer += String(d)))
   child.stderr?.on('data', (d) => (buffer += String(d)))

@@ -129,7 +129,9 @@ process.on('SIGINT', () => {
 
 // --- Generated data fixtures (TSK0045) --------------------------------------
 
-const MAX_FIXTURE_ROWS = 10_000
+// 100k rows ≈ 6.8 MB — above the 1 MiB OPFS part size so storage tests can
+// force at least one immutable part file (rows are generated on demand).
+const MAX_FIXTURE_ROWS = 100_000
 
 function intParam(params, name, fallback, max = Number.MAX_SAFE_INTEGER) {
   const raw = params.get(name)
