@@ -3,8 +3,6 @@ title: Editing and Export
 description: How edits are stored (stable line IDs, byte budget), format/compact modes, and export
 ---
 
-# Editing and Export
-
 ## How Edits Are Stored
 
 Edits are **byte-accounted overrides of a whole row**, keyed by the row's

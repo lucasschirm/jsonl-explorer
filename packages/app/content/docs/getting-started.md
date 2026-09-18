@@ -3,8 +3,6 @@ title: Getting Started
 description: Learn how to open JSONL files using drag-and-drop, file picker, or URL with custom headers
 ---
 
-# Getting Started
-
 JSONL Explorer makes it easy to open and explore JSONL files. You can load files in three ways:
 
 ## Drag and Drop
@@ -29,7 +27,7 @@ Click "Open from URL" to load a JSONL file from a public HTTP/HTTPS endpoint. Yo
 
 Public URLs (and the CLI's capability URLs) can be opened directly:
 
-```
+```text
 https://jsonlexplorer.lucasschirm.com/explorer?url=https://example.com/data.jsonl
 ```
 

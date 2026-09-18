@@ -3,8 +3,6 @@ title: Embedding & Handover
 description: Use postMessage API to load JSONL data into an embedded explorer
 ---
 
-# Embedding & Handover
-
 JSONL Explorer can be embedded in other applications via iframe or `window.open` and receive data through a secure postMessage protocol.
 
 ## Embedding
@@ -101,7 +99,7 @@ as the window and the iframe's `src` origin as `EXPLORER_ORIGIN`.
 
 For public URLs without headers, use the `?url=` parameter:
 
-```
+```text
 https://jsonlexplorer.lucasschirm.com/explorer?url=https://example.com/data.jsonl
 ```
 

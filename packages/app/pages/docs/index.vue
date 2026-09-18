@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { queryContent, type ContentDocument } from '#imports'
+import { queryContent } from '#imports'
+import type { DocsDocument } from '~/utils/docs'
 
 // SPA mode (documentDriven: false): query the content API client-side.
-const docs = (await queryContent().where({ _partial: false }).find()) as ContentDocument[] | null
-const sortedDocs = computed(() => docs?.sort((a, b) => a.title.localeCompare(b.title)) ?? [])
+const docs = (await queryContent().where({ _partial: false }).find()) as DocsDocument[] | null
+const sortedDocs = computed(() => docOrder(docs ?? []))
 </script>
 
 <template>

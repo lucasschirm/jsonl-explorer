@@ -3,8 +3,6 @@ title: Exploring Data
 description: Navigate rows, select documents, use the JSON tree view with collapse/expand
 ---
 
-# Exploring Data
-
 Once you've loaded a JSONL file, the explorer view provides two panels:
 
 ## Layout and minimum viewport

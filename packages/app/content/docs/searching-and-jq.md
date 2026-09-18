@@ -3,8 +3,6 @@ title: Searching and jq
 description: Text substring search and jq filter queries with examples
 ---
 
-# Searching and jq
-
 The filter bar at the top of the left panel filters the **whole file** and
 replaces the row view with the matches. It supports two modes, chosen with
 the **Text / jq** toggle (the mode is never guessed from your input):

@@ -3,8 +3,6 @@ title: CLI (jsonlex)
 description: Install and use the jsonlex CLI to serve local files securely
 ---
 
-# CLI (jsonlex)
-
 The `jsonlex` CLI serves local JSONL files via a secure local server and opens the explorer in your browser.
 
 ## Installation

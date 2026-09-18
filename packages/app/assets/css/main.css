@@ -32,6 +32,14 @@
     @apply scroll-smooth;
   }
 
+  /* Long inline-code tokens (URLs, capability strings) must not push the
+     page wider than the viewport on narrow screens: wrap them in place.
+     Block-level <pre> code keeps its own horizontal scroll (TSK0048). */
+  :not(pre) > code {
+    overflow-wrap: anywhere;
+  }
+
+
   body {
     @apply bg-base-100 text-base-content min-h-screen;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
