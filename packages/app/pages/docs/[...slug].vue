@@ -1,6 +1,27 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
+import { queryContent, type ContentDocument } from '#imports'
+
+// SPA mode (documentDriven: false): query the content API client-side.
+// The content API serves BUILD-TIME-GENERATED query assets keyed by a
+// hash of the query params — a where() containing the dynamic route
+// slug has no stable hash and 404s. So this page runs the SAME static
+// query as the docs index (whose asset exists) and picks its doc
+// client-side. The computed `doc` tracks route changes, so client-side
+// navigation between guides works without a reload.
 const route = useRoute()
-const { data: doc } = await useContent().where({ _path: route.params.slug }).get()
+const all = ref<ContentDocument[]>([])
+const doc = computed(() => {
+  const slug = String(route.params.slug ?? '')
+  // Content _path is '/docs/<slug>' (content lives under content/docs),
+  // the route slug is '<slug>'.
+  return all.value.find((d) => d._path === `/docs/${slug}`) ?? null
+})
+await load()
+
+async function load(): Promise<void> {
+  all.value = ((await queryContent().where({ _partial: false }).find()) ?? []) as ContentDocument[]
+}
 </script>
 
 <template>

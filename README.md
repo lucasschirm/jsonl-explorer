@@ -106,6 +106,26 @@ pnpm test:e2e
 pnpm screenshots
 ```
 
+## E2E & CI
+
+`pnpm test:e2e` runs the Playwright suite against the **built** app
+(`pnpm build` first — the app and the CLI are both exercised from their
+built artifacts). The suite is served by a thin front server
+(`packages/app/scripts/e2e-server.mjs`) that fronts the real nitro
+server and adds:
+
+- same-origin fixtures under `/e2e-host/*` (handover host pages, data
+  files with Referer recording);
+- generated data endpoints under `/e2e-fixture/*` (slow/chunked/gzip
+  JSONL streams, misleading content-length, redirects, header echo,
+  typed errors) — nothing large is committed.
+
+Projects: **Chromium** runs the whole suite (PR CI); a **WebKit smoke**
+subset (`e2e/smoke.spec.ts`) runs in the scheduled/manual workflow
+(`.github/workflows/ci-scheduled.yml`) via `E2E_INCLUDE_WEBKIT=1`. On
+failure, traces and screenshots are uploaded as `test-results/`
+artifacts.
+
 ## License
 
 MIT

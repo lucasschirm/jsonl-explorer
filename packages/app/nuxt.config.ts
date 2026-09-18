@@ -40,6 +40,13 @@ const csp = [
 
 export default defineNuxtConfig({
   ssr: false,
+  // SPA mode (Nuxt Content v2): pages run `queryContent()` client-side
+  // against the content API served by the nitro server. `useContent()`
+  // (documentDriven) throws in a no-SSR app — the /docs pages 500'd
+  // until this was set (TSK0045 smoke test caught it).
+  content: {
+    documentDriven: false,
+  },
 
   app: {
     head: {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useContent } from '#imports'
+import { queryContent, type ContentDocument } from '#imports'
 
-const { data: docs } = await useContent().where({ _partial: false }).get()
-const sortedDocs = computed(() => docs.value?.sort((a, b) => a.title.localeCompare(b.title)) ?? [])
+// SPA mode (documentDriven: false): query the content API client-side.
+const docs = (await queryContent().where({ _partial: false }).find()) as ContentDocument[] | null
+const sortedDocs = computed(() => docs?.sort((a, b) => a.title.localeCompare(b.title)) ?? [])
 </script>
 
 <template>
@@ -33,7 +34,7 @@ const sortedDocs = computed(() => docs.value?.sort((a, b) => a.title.localeCompa
           <nuxt-link
             v-for="doc in sortedDocs"
             :key="doc._path"
-            :to="`/docs/${doc._path}`"
+            :to="doc._path"
             class="card card-compact bg-base-200 hover:bg-base-300 transition-colors"
           >
             <div class="card-body">
