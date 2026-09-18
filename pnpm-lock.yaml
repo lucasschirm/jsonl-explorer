@@ -126,6 +126,9 @@ importers:
       '@fastify/static':
         specifier: ^7.0.0
         version: 7.0.4
+      '@jsonl-explorer/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.43

@@ -23,9 +23,10 @@
 
 import fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
+import { buildAppCsp } from '@jsonl-explorer/shared'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
-import { accessSync, constants as fsConstants, createReadStream, statSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { accessSync, constants as fsConstants, createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -138,9 +139,10 @@ export async function createServer(options: ServerOptions) {
     reply.header('Referrer-Policy', 'no-referrer')
     reply.header('Cache-Control', 'no-store')
     // Framing: the file endpoint must never be framed; in --local mode the
-    // served site follows the app's own policy (same-origin embedding only).
+    // served site follows the app's OWN policy — the full shared CSP
+    // (packages/shared/src/csp.ts, TSK0054), not a hand-rolled subset.
     if (options.local) {
-      reply.header('Content-Security-Policy', "frame-ancestors 'self'")
+      reply.header('Content-Security-Policy', buildAppCsp())
     } else {
       reply.header('X-Frame-Options', 'DENY')
     }
@@ -246,8 +248,28 @@ export async function createServer(options: ServerOptions) {
 
   // Anything not explicitly routed (wrong capability, traversal, methods):
   // 404 — never 405 (do not advertise which methods exist on the route).
-  server.setNotFoundHandler((_request, reply) => {
-    reply.code(404).send({ error: 'Not found' })
+  // Exception (--local SPA fallback, TSK0054): extensionless direct routes
+  // like /explorer or /docs/<slug> have no file in the staged site — serve
+  // the SPA shell so the client router renders them (hard refresh works).
+  // Asset-looking paths and the API routes (/file, /health) stay hard
+  // 404s: the capability-token contract (TSK0041) is a JSON 404.
+  server.setNotFoundHandler((request, reply) => {
+    const path = new URL(request.url, 'http://localhost').pathname
+    const isApiRoute = path === '/file' || path.startsWith('/file/') || path === '/health'
+    const looksLikeAsset = path.split('/').pop()?.includes('.') ?? false
+    // An EXISTING directory (e.g. /_nuxt/) is still a 404: no listing,
+    // no auto-index — the fallback is only for paths that map to nothing.
+    const mapsToExistingDir =
+      path !== '/' && existsSync(join(getSitePath(), path)) && statSync(join(getSitePath(), path)).isDirectory()
+    if (options.local && !isApiRoute && !looksLikeAsset && !mapsToExistingDir) {
+      const shell = join(getSitePath(), 'index.html')
+      if (existsSyncLocal(shell)) {
+        reply.header('content-type', 'text/html; charset=utf-8')
+        reply.header('cache-control', 'no-store')
+        return reply.send(readFileSync(shell))
+      }
+    }
+    return reply.code(404).send({ error: 'Not found' })
   })
 
   // Serve static site in --local mode (no listing, no dotfiles).

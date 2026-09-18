@@ -122,6 +122,13 @@ jobs:
       - name: Build app and CLI
         run: pnpm build
 
+      # The exact production path: nuxi generate -> _headers (shared CSP
+      # source of truth) -> validation of routes/links/worker/WASM/404s
+      # with Cloudflare Pages resolution semantics. Fails PRs on broken
+      # production output before deploy ever sees them.
+      - name: Validate production static output (Cloudflare Pages)
+        run: pnpm --filter jsonl-explorer-app check:production
+
       - name: Upload build artifacts
         if: failure()
         uses: actions/upload-artifact@v4

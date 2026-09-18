@@ -1,51 +1,34 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 import { defineNuxtConfig } from 'nuxt/config'
+import { buildAppCsp, APP_SECURITY_HEADERS } from '@jsonl-explorer/shared'
 import { jqWasmAssetPlugin } from './vite/jqWasmAsset'
 
-/**
- * Origins allowed to EMBED (frame) the app: same-origin plus the
- * handover allowlist (VITE_HANDOVER_ALLOWED_ORIGINS). The clickjacking
- * policy and the handover trust boundary are the SAME list: only
- * origins trusted to hand data over may frame the app. `*` is dropped
- * (fail closed) — a wildcard frame-ancestors would let any page
- * embed the explorer. (TSK0039: embedding was documented as supported
- * but X-Frame-Options: DENY forbade it; frame-ancestors is now the
- * single framing policy.)
- */
-function frameAncestors(allowedOrigins?: string): string {
-  const origins = (allowedOrigins ?? '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter((o) => o.length > 0 && o !== '*' && o !== 'same-origin')
-  return ["'self'", ...origins].join(' ')
-}
-
-// Content Security Policy for module workers, jq (engine/jq.ts), and inline styles.
-// The jq backend is the jq-web WASM build: 'wasm-unsafe-eval' covers the
-// WebAssembly instantiation in the worker, and the binary is same-origin
-// (`/_nuxt/jq.wasm.wasm`, covered by connect-src 'self').
-const csp = [
-  "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'", // wasm-unsafe-eval reserved for a WASM jq build, unsafe-inline for Nuxt/Vue
-  "style-src 'self' 'unsafe-inline'", // Tailwind/DaisyUI uses inline styles
-  "worker-src 'self' blob:", // Web Workers and module workers
-  "connect-src 'self' https:", // For URL loading (fetch)
-  "font-src 'self' data:", // Fonts
-  "img-src 'self' data:", // Images
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  `frame-ancestors ${frameAncestors(process.env['VITE_HANDOVER_ALLOWED_ORIGINS'])}`,
-].join('; ')
+// ONE CSP source of truth (TSK0054): the same policy is enforced by
+// nitro (here), static hosting (scripts/finalize-production-output.mjs
+// writes Cloudflare Pages `_headers` from it), and the CLI --local
+// server. See packages/shared/src/csp.ts for the directive rationale.
+const csp = buildAppCsp(process.env['VITE_HANDOVER_ALLOWED_ORIGINS'])
 
 export default defineNuxtConfig({
   ssr: false,
-  // SPA mode (Nuxt Content v2): pages run `queryContent()` client-side
-  // against the content API served by the nitro server. `useContent()`
-  // (documentDriven) throws in a no-SSR app — the /docs pages 500'd
-  // until this was set (TSK0045 smoke test caught it).
+  // SPA mode (Nuxt Content v2): pages run `queryContent()` client-side.
+  // `useContent()` (documentDriven) throws in a no-SSR app — the /docs
+  // pages 500'd until this was set (TSK0045 smoke test caught it).
+  //
+  // experimental.clientDB (TSK0054): the content module only wires the
+  // in-memory client DB when `ssr === false` AND this flag is set. Without
+  // it, queryContent() is the LEGACY fetch client: every query hits
+  // /api/_content/query/<hash>.<integrity>.json — hashed assets that `nuxi
+  // generate` does NOT emit (only cache.<integrity>.json). The docs pages
+  // then 404 on ANY static host (CLI --local, Cloudflare Pages) while
+  // working on the nitro runtime (which computes the assets on demand).
+  // With clientDB the browser fetches the ONE cache file and runs every
+  // query in memory — the static output is self-contained.
   content: {
     documentDriven: false,
+    experimental: {
+      clientDB: true,
+    },
   },
 
   // Nuxt wires CSS PostCSS plugins from `nuxt.options.postcss` ONLY — it
@@ -108,12 +91,12 @@ export default defineNuxtConfig({
   // Prerendering `/` is what emits the SPA shell index.html for static hosting.
   nitro: {
     routeRules: {
-      // Security headers for all routes
+      // Security headers for all routes (shared with the static-hosting
+      // _headers and the CLI --local server, TSK0054)
       '/**': {
         headers: {
           'Content-Security-Policy': csp,
-          'Referrer-Policy': 'no-referrer',
-          'X-Content-Type-Options': 'nosniff',
+          ...APP_SECURITY_HEADERS,
           // NB: no X-Frame-Options — CSP frame-ancestors (above) is the
           // single framing policy; XFO would contradict the documented
           // embedding support (and is ignored when frame-ancestors exists).

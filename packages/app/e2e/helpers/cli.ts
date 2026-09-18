@@ -52,12 +52,13 @@ export async function launchCli(file: string, port: number, options: LaunchCliOp
   child.stdout?.on('data', (d) => (buffer += String(d)))
   child.stderr?.on('data', (d) => (buffer += String(d)))
 
-  const started = await waitForText('Server running', () => buffer, 30_000)
-    .catch(() => {
-      child.kill('SIGKILL')
-      throw new Error(`CLI did not start. Output:\n${buffer}`)
-    })
-  void started
+  // Wait for the LAST intentional print: the three --no-open lines land
+  // in separate pipe chunks, and parsing after only 'Server running' is
+  // a race (TSK0054 flake).
+  await waitForText('Explorer URL: ', () => buffer, 30_000).catch(() => {
+    child.kill('SIGKILL')
+    throw new Error(`CLI did not start. Output:\n${buffer}`)
+  })
 
   const fileUrl = /File served at (http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{64}\/file\.jsonl)/.exec(buffer)?.[1]
   const explorerUrl = /Explorer URL: (\S+)/.exec(buffer)?.[1]

@@ -60,6 +60,34 @@ test.describe('CLI serving security (TSK0047)', () => {
     })
   })
 
+  test('local mode: direct routes serve the SPA (hard refresh works)', async ({ page }) => {
+    // TSK0054: /explorer and /docs/<slug> have no file in the staged site;
+    // the CLI's SPA fallback must serve the shell so the client router
+    // renders them (a hard refresh on a deep link used to 404).
+    await withCli(true, async (cli) => {
+      await page.goto(`${cli.baseUrl}/docs/getting-started`, { waitUntil: 'domcontentloaded' })
+      await expect(page.locator('h1')).toContainText(/getting started/i, { timeout: 30_000 })
+
+      // The explorer deep link serves the shell; with no file loaded the
+      // app boots and redirects to the landing page (its designed guard).
+      await page.goto(`${cli.baseUrl}/explorer`, { waitUntil: 'domcontentloaded' })
+      await expect(page).toHaveURL(/\/$/, { timeout: 30_000 })
+      await page.locator('[role="button"][aria-label^="File drop zone"]').waitFor()
+
+      // Asset-looking paths stay HARD 404s (no SPA shell for them).
+      const missing = await httpRequest(`${cli.baseUrl}/definitely-missing.png`, {})
+      expect(missing.status).toBe(404)
+
+      // The served site carries the app's full CSP (shared source of
+      // truth), not a bare frame-ancestors stub.
+      const home = await httpRequest(`${cli.baseUrl}/`, {})
+      expect(home.status).toBe(200)
+      expect(home.headers['content-security-policy']).toContain("frame-ancestors 'self'")
+      expect(home.headers['content-security-policy']).toContain("worker-src 'self' blob:")
+      expect(home.headers['referrer-policy']).toBe('no-referrer')
+    })
+  })
+
   test('local mode: a different origin cannot read the capability file', async ({ page }) => {
     await withCli(true, async (cli) => {
       // Hostile probe page on the fixture server's origin (4173 ≠ CLI port).

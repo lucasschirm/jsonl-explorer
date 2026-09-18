@@ -1,0 +1,137 @@
+name: Deploy (Cloudflare Pages — production)
+
+# TSK0054 — least-privilege production deploy.
+#
+# - Triggers ONLY after a green CI run on main (workflow_run) or on
+#   manual dispatch. Pull requests NEVER trigger this workflow, so they
+#   never see or use deploy credentials.
+# - Runs in the PROTECTED `production` environment (environment-level
+#   secret/approval restrictions in the repo settings).
+# - OIDC (id-token: write) is what actions/deploy-pages uses to reach
+#   Cloudflare Pages — no long-lived Cloudflare token in secrets.
+# - Post-deploy smoke checks the live URL (routes, SPA fallback, 404,
+#   worker/WASM assets, exact CSP, metadata).
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # OIDC → Cloudflare Pages (actions/deploy-pages)
+  pages: write # required by actions/upload-pages-artifact / deploy-pages
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20.11.0'
+  PNPM_VERSION: '9.4.0'
+
+jobs:
+  deploy:
+    name: Build + validate + deploy static output
+    # workflow_run: only on SUCCESS; manual dispatch: always allowed
+    # (documented emergency path — the protected environment still gates it).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # nuxi GENERATE (not build) is the static-output command: it emits
+      # .output/public with the prerendered routes, the SPA shell
+      # (index.html + 200.html + 404.html), and the content API. shared
+      # must be built first (nuxt.config and the finalize step import its
+      # built CSP source of truth). The CLI is NOT needed here — the
+      # deploy is the browser app only.
+      - name: Generate static output
+        run: pnpm --filter=@jsonl-explorer/shared build && pnpm --filter jsonl-explorer-app exec nuxi generate
+
+      # Writes Cloudflare Pages `_headers` (CSP/security/cache from the
+      # shared source of truth) and validates the output the way Pages
+      # serves it: direct routes, generated-HTML link check, worker +
+      # WASM assets, 404 semantics. Fails the deploy on any problem.
+      # finalize:production (not check:production): this job already ran
+      # nuxi generate, and the trailing `nuxi build` of check:production
+      # (which restores the nitro server for local e2e) is useless here.
+      - name: Finalize + validate production output
+        run: pnpm --filter jsonl-explorer-app finalize:production
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/app/.output/public
+
+      - name: Deploy to Cloudflare Pages
+        uses: actions/deploy-pages@v3
+        with:
+          # The Pages project + custom domain (jsonlexplorer.lucasschirm.com)
+          # are wired in the repo's Cloudflare Pages settings (one-time
+          # manual setup — see README "Deployment").
+          production_branch: main
+
+  post-deploy-smoke:
+    name: Post-deploy smoke (live URL)
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The smoke script imports the shared CSP source of truth.
+      - name: Build shared
+        run: pnpm --filter=@jsonl-explorer/shared build
+
+      # Cloudflare can take a few seconds to propagate a new deploy —
+      # retry a bounded number of times before failing.
+      - name: Smoke the live site
+        run: |
+          for i in 1 2 3 4 5; do
+            if pnpm --filter jsonl-explorer-app exec node scripts/post-deploy-smoke.mjs; then
+              exit 0
+            fi
+            echo "[smoke] attempt $i failed — retrying in 30 s"
+            sleep 30
+          done
+          echo "[smoke] production smoke failed after 5 attempts" >&2
+          exit 1

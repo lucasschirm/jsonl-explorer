@@ -35,6 +35,11 @@ rmSync(target, { recursive: true, force: true })
 mkdirSync(target, { recursive: true })
 cpSync(source, target, { recursive: true })
 
+// Cloudflare Pages' `_headers` (written by the app's production finalize
+// step, TSK0054) is host-specific config — the CLI's own Fastify server
+// sets its own headers, and the file must not be served at /_headers.
+rmSync(join(target, '_headers'), { force: true })
+
 // Sanity: the SPA entry must have survived the copy.
 if (!existsSync(join(target, 'index.html'))) {
   fail(`index.html missing after copy to ${target}`)
