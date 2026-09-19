@@ -25,8 +25,9 @@ that serves local files to the app.
 
 ## Quick start
 
-Requirements: **Node.js ≥ 20.11.0**, **pnpm ≥ 9.0.0** (repo pins `pnpm@9.4.0`
-via `packageManager`).
+Requirements: **Node.js ≥ 20.19.0** (the dev toolchain — vite 7 — needs it;
+CI runs Node 22 LTS), **pnpm ≥ 9.0.0** (repo pins `pnpm@9.4.0` via
+`packageManager`). The published CLI itself runs on Node ≥ 20.11.
 
 ```bash
 pnpm install        # frozen lockfile install of the workspace

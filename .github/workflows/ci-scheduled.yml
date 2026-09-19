@@ -19,7 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20.11.0'
+  # Node 22 LTS — see ci.yml for why (vite 7 / plugin-vue 6 floor).
+  NODE_VERSION: '22'
   PNPM_VERSION: '9.4.0'
 
 jobs:
@@ -51,14 +52,21 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # Typecheck needs Nuxt's generated ambient types (.nuxt/); shared
+      # must be built first (nuxt.config.ts imports its built exports).
+      - name: Prepare Nuxt types
+        run: pnpm --filter=@jsonl-explorer/shared build && pnpm --filter jsonl-explorer-app exec nuxi prepare
+
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Unit tests (app + shared + cli, incl. packed-artifact suite)
-        run: pnpm test:unit
-
+      # Build BEFORE unit tests: they import built artifacts (shared
+      # dist/, CLI dist/ + staged site). E2E reuses this build.
       - name: Build app and CLI
         run: pnpm build
+
+      - name: Unit tests (app + shared + cli, incl. packed-artifact suite)
+        run: pnpm test:unit
 
       - name: Install Chromium + WebKit
         run: pnpm --filter jsonl-explorer-app exec playwright install --with-deps chromium webkit

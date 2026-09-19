@@ -29,7 +29,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20.11.0'
+  # Node 22 LTS — `nuxi generate` runs the vite 7 toolchain (see ci.yml)
+  NODE_VERSION: '22'
   PNPM_VERSION: '9.4.0'
 
 jobs:

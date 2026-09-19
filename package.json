@@ -22,7 +22,7 @@
     "gate": "pnpm lint && pnpm typecheck && pnpm --filter jsonl-explorer-app check:docs && pnpm --filter jsonl-explorer-app check:credits && pnpm test && pnpm build && pnpm --filter jsonl-explorer-app check:production && pnpm test:e2e"
   },
   "engines": {
-    "node": ">=20.11.0",
+    "node": ">=20.19.0",
     "pnpm": ">=9.0.0"
   },
   "packageManager": "pnpm@9.4.0",

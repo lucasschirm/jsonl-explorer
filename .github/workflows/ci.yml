@@ -16,7 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: '20.11.0'
+  # Node 22 LTS: the Nuxt/vite-7 toolchain (plugin-vue 6) needs
+  # crypto.hash, which landed in Node 20.12 and whose full support floor
+  # for vite 7 is 20.19 — CI runs the current LTS.
+  NODE_VERSION: '22'
   PNPM_VERSION: '9.4.0'
 
 jobs:
@@ -45,6 +48,14 @@ jobs:
 
       - name: Run lint
         run: pnpm lint
+
+      # Typecheck needs Nuxt's generated ambient types (.nuxt/ —
+      # defineNuxtPlugin, the content module's nuxt.config typing), which
+      # a fresh checkout does not have. `nuxi prepare` generates them;
+      # shared must be built first because nuxt.config.ts imports its
+      # BUILT exports.
+      - name: Prepare Nuxt types
+        run: pnpm --filter=@jsonl-explorer/shared build && pnpm --filter jsonl-explorer-app exec nuxi prepare
 
       - name: Run typecheck
         run: pnpm typecheck
@@ -82,6 +93,13 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Unit tests import BUILT artifacts: @jsonl-explorer/shared resolves
+      # to dist/, and the CLI packed-artifact suite packs dist/ + the
+      # staged site (which needs the app build). A fresh checkout has
+      # none of that — build first.
+      - name: Build (shared -> app -> cli)
+        run: pnpm build
 
       - name: Run unit tests
         run: pnpm test:unit

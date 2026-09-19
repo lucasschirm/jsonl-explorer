@@ -80,7 +80,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20.11.0
+          # Node 22 LTS — the Nuxt/vite-7 toolchain needs >20.11 (see ci.yml)
+          node-version: 22
 
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
@@ -90,6 +91,11 @@ jobs:
       # output validation, and the Chromium e2e suite.
       - name: Install Chromium (for e2e)
         run: pnpm --filter jsonl-explorer-app exec playwright install chromium
+
+      # Typecheck (inside the gate) needs Nuxt's generated ambient types;
+      # shared must be built first (nuxt.config.ts imports its built exports).
+      - name: Prepare Nuxt types
+        run: pnpm --filter=@jsonl-explorer/shared build && pnpm --filter jsonl-explorer-app exec nuxi prepare
 
       - name: Run full gate
         run: pnpm gate

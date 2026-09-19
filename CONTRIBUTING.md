@@ -5,7 +5,8 @@ Thanks for helping. This repo is a pnpm monorepo: `packages/app` (Nuxt 3 SPA),
 
 ## Setup
 
-- Node.js ≥ 20.11.0, pnpm ≥ 9.0.0 (`corepack enable` picks up the pinned
+- Node.js ≥ 20.19.0 (the dev toolchain — vite 7 — needs it; CI runs Node 22
+  LTS), pnpm ≥ 9.0.0 (`corepack enable` picks up the pinned
   `packageManager: pnpm@9.4.0`).
 - `pnpm install`, then `pnpm dev` for the app (http://localhost:3000).
 
