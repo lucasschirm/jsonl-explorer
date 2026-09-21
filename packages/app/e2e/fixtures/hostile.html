@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Hostile (unallowed origin)</title>
+  </head>
+  <body>
+    <p>hostile page on an UNALLOWED origin</p>
+    <script>
+      // Hostile harness: this page (served from a different origin than the
+      // explorer) opens its own explorer window and tries to hand over data.
+      // Expected: the explorer NEVER loads the payload and NEVER replies to
+      // this origin (no ready, no loaded, no error — total silence).
+      window.__hostile = { got: [], sent: 0 }
+      const EXPLORER = 'http://localhost:4173'
+      const popup = window.open(EXPLORER + '/explorer', 'hostile-exp', 'width=1100,height=800')
+      window.addEventListener('message', (event) => {
+        if (event.data && event.data.ns === 'jsonl-explorer') {
+          window.__hostile.got.push(event.data.type)
+        }
+      })
+      // Several attempts across the boot window — all must be ignored.
+      for (const delay of [2000, 4500, 7000]) {
+        setTimeout(() => {
+          try {
+            popup.postMessage(
+              { ns: 'jsonl-explorer', v: 1, type: 'load', name: 'evil.jsonl', payload: '{"evil":1}\n' },
+              EXPLORER,
+            )
+            window.__hostile.sent++
+          } catch (e) {
+            /* popup closed */
+          }
+        }, delay)
+      }
+    </script>
+  </body>
+</html>

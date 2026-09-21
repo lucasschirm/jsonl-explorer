@@ -1,0 +1,38 @@
+{
+  "name": "@jsonl-explorer/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared types and protocol for JSONL Explorer",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": ["./dist/index.d.ts", "./src/index.ts"],
+      "import": ["./dist/index.mjs", "./src/index.ts"],
+      "require": ["./dist/index.js", "./src/index.ts"]
+    },
+    "./handover": {
+      "types": ["./dist/handover.d.ts", "./src/handover.ts"],
+      "import": ["./dist/handover.mjs", "./src/handover.ts"],
+      "require": ["./dist/handover.js", "./src/handover.ts"]
+    },
+    "./protocol": {
+      "types": ["./dist/protocol.d.ts", "./src/protocol.ts"],
+      "import": ["./dist/protocol.mjs", "./src/protocol.ts"],
+      "require": ["./dist/protocol.js", "./src/protocol.ts"]
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test:unit": "vitest run",
+    "lint": "eslint . --cache"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "#app/*": ["./*"],
+      "#shared/*": ["../shared/src/*"],
+      "~": ["."],
+      "~/*": ["./*"],
+      "@": ["."],
+      "@/*": ["./*"],
+      "~/engine": ["engine/index"],
+      "@jsonl-explorer/shared/*": ["../shared/src/*"],
+      "@jsonl-explorer/shared": ["../shared/src/index"]
+    }, 
+    "types": ["vue", "node"],
+    "jsx": "preserve",
+    "moduleResolution": "bundler",
+    "module": "ESNext"
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.vue",
+    "**/*.d.ts",
+    ".nuxt/**/*.ts",
+    ".nuxt/**/*.d.ts"
+  ],
+  "exclude": ["node_modules", "dist", ".output", "tests/**/*", "vitest.config.ts"]
+}

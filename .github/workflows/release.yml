@@ -1,0 +1,169 @@
+# TSK0056 — npm release for `jsonlex`.
+#
+# Publishes ONLY from version tags (`vX.Y.Z`) pushed to the repository.
+# Branches and pull requests can never reach this workflow, so they never
+# need (and never receive) publish capability. The publish itself uses npm
+# trusted publishing (OIDC, `id-token: write`) with provenance — there is no
+# NPM_TOKEN anywhere in this repository.
+#
+# Sequence (fail anywhere before publish → nothing is published):
+#   1. validate the tag is exactly vX.Y.Z
+#   2. immutable-version check: the version must NOT already be on npm
+#   3. full gate (lint, typecheck, docs, credits, unit, build,
+#      check:production, e2e) — the same checks as CI
+#   4. stamp the version (repo package.json stays 0.0.0/private — the
+#      stamp happens on the CI checkout only) and pack
+#   5. npm publish --provenance
+#   6. post-publish smoke: install the published version in a clean
+#      environment (npx) and verify help/version
+#
+# One-time manual prerequisites (repo/npm owner — see docs/releasing.md):
+# the npm package must exist and this repository must be configured as a
+# trusted publisher for it.
+
+name: Release
+
+on:
+  push:
+    # Broad pattern on purpose: in GitHub's glob `+` is a LITERAL, so a
+    # `v[0-9]+...` pattern would never match a real tag. The first step
+    # validates the tag against ^vX.Y.Z$ (regex) and refuses anything else.
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # OIDC for npm provenance — no token secret
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version tag
+        id: tag
+        run: |
+          ref="${GITHUB_REF#refs/tags/}"
+          if ! [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$ref' is not vX.Y.Z — refusing to release."
+            exit 1
+          fi
+          version="${ref#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$(node -p "require('./packages/cli/package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${{ steps.tag.outputs.name }}@$version"
+
+      # Versions on npm are IMMUTABLE: a version number can never be
+      # republished or overwritten. If this version already exists, the tag
+      # is wrong (or the release already happened) — fail loudly instead of
+      # publishing nothing silently.
+      - name: Immutable version check (must not be published yet)
+        run: |
+          version="${{ steps.tag.outputs.version }}"
+          name="${{ steps.tag.outputs.name }}"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::error::$name@$version is already published on npm — versions are immutable. Bump the version and tag again."
+            exit 1
+          fi
+          echo "OK: $name@$version is not on npm yet"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # Node 22 LTS — the Nuxt/vite-7 toolchain needs >20.11 (see ci.yml)
+          node-version: 22
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # The full CI gate: lint, typecheck, docs check, credits check, unit
+      # (incl. the packed-artifact integration suite), build, production
+      # output validation, and the Chromium e2e suite.
+      - name: Install Chromium (for e2e)
+        run: pnpm --filter jsonl-explorer-app exec playwright install chromium
+
+      # Typecheck (inside the gate) needs Nuxt's generated ambient types;
+      # shared must be built first (nuxt.config.ts imports its built exports).
+      - name: Prepare Nuxt types
+        run: pnpm --filter=@jsonl-explorer/shared build && pnpm --filter jsonl-explorer-app exec nuxi prepare
+
+      - name: Run full gate
+        run: pnpm gate
+
+      # Stamp the release version on the CI checkout only — the committed
+      # package.json stays 0.0.0 + private, so a stray `npm publish` from a
+      # laptop can never ship 0.0.0 or a duplicate. `--version` reads the
+      # installed package.json at runtime, so no rebuild is needed.
+      - name: Stamp release version
+        run: |
+          cd packages/cli
+          npm pkg set version="${{ steps.tag.outputs.version }}" private=false
+          node -p "'stamped ' + require('./package.json').name + '@' + require('./package.json').version"
+
+      - name: Publish to npm (trusted publishing + provenance)
+        working-directory: packages/cli
+        run: npm publish --access public --provenance
+
+      # Prove the published artifact is installable and runnable from the
+      # registry in a clean environment (npx installs into a throwaway
+      # cache — nothing from this repo is involved). Covers help/version
+      # and the local/remote --no-open server flows (capability file +
+      # staged site for --local; hosted explorer URL for remote).
+      - name: Post-publish smoke (clean-environment npx)
+        run: |
+          set -e
+          name="${{ steps.tag.outputs.name }}"
+          version="${{ steps.tag.outputs.version }}"
+
+          npx -y "$name@$version" --help | head -3
+          actual="$(npx -y "$name@$version" --version)"
+          if [ "$actual" != "$version" ]; then
+            echo "::error::Published --version is '$actual', expected '$version'."
+            exit 1
+          fi
+          echo "OK: npx $name@$version --version -> $actual"
+
+          work="$(mktemp -d)"
+          echo '{"a":1}' > "$work/t.jsonl"
+          cleanup_port() { # $1 = port
+            for p in $(ss -ltnp 2>/dev/null | grep ":$1 " | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u); do
+              kill -TERM "$p" 2>/dev/null || true
+            done
+          }
+
+          # --local --no-open: staged site + capability file from the tarball
+          npx -y "$name@$version" --local --no-open --port 46123 "$work/t.jsonl" > "$work/local.log" 2>&1 &
+          for i in $(seq 1 90); do grep -q 'Explorer URL:' "$work/local.log" 2>/dev/null && break; sleep 1; done
+          grep -q 'Explorer URL:' "$work/local.log" || { cat "$work/local.log"; exit 1; }
+          file_url=$(grep -oE 'http://127\.0\.0\.1:46123/[0-9a-f]{64}/file\.jsonl' "$work/local.log" | head -1)
+          [ -n "$file_url" ] || { cat "$work/local.log"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$file_url" || echo 000)
+          [ "$code" = "200" ] || { echo "::error::capability file -> $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:46123/' || echo 000)
+          [ "$code" = "200" ] || { echo "::error::staged SPA shell -> $code"; exit 1; }
+          echo "OK: --local smoke (capability + staged site served)"
+          cleanup_port 46123
+
+          # remote --no-open: capability on loopback + hosted explorer URL
+          npx -y "$name@$version" --no-open --port 46124 "$work/t.jsonl" > "$work/remote.log" 2>&1 &
+          for i in $(seq 1 90); do grep -q 'Explorer URL:' "$work/remote.log" 2>/dev/null && break; sleep 1; done
+          grep -q 'Explorer URL: https://jsonlexplorer.lucasschirm.com/?url=' "$work/remote.log" \
+            || { cat "$work/remote.log"; exit 1; }
+          file_url=$(grep -oE 'http://127\.0\.0\.1:46124/[0-9a-f]{64}/file\.jsonl' "$work/remote.log" | head -1)
+          [ -n "$file_url" ] || { cat "$work/remote.log"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$file_url" || echo 000)
+          [ "$code" = "200" ] || { echo "::error::capability file -> $code"; exit 1; }
+          echo "OK: remote smoke (capability served + hosted URL printed)"
+          cleanup_port 46124
+
+          rm -rf "$work"

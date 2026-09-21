@@ -1,0 +1,104 @@
+name: CI (scheduled / manual — full browser matrix)
+
+# The PR workflow (ci.yml) stays fast: unit + build + Chromium E2E. This
+# workflow adds the WebKit SMOKE subset (playwright project 'webkit',
+# enabled via E2E_INCLUDE_WEBKIT) on a weekly schedule and on demand.
+
+on:
+  schedule:
+    # Monday 03:17 UTC — off-peak, away from dependency-update bursts.
+    - cron: '17 3 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: scheduled-full-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Node 22 LTS — see ci.yml for why (vite 7 / plugin-vue 6 floor).
+  NODE_VERSION: '22'
+  PNPM_VERSION: '9.4.0'
+
+jobs:
+  full-suite:
+    name: Unit + Build + E2E (Chromium & WebKit smoke)
+    runs-on: ubuntu-latest
+    # 40 was tight before the perf suites (TSK0053 added a 100 MiB budget
+    # run + a 2 GiB soak); 60 keeps a margin for slow CI runners.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      # Typecheck needs Nuxt's generated ambient types (.nuxt/); shared
+      # must be built first (nuxt.config.ts imports its built exports).
+      - name: Prepare Nuxt types
+        run: pnpm --filter=@jsonl-explorer/shared build && pnpm --filter jsonl-explorer-app exec nuxi prepare
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Build BEFORE unit tests: they import built artifacts (shared
+      # dist/, CLI dist/ + staged site). E2E reuses this build.
+      - name: Build app and CLI
+        run: pnpm build
+
+      - name: Unit tests (app + shared + cli, incl. packed-artifact suite)
+        run: pnpm test:unit
+
+      - name: Install Chromium + WebKit
+        run: pnpm --filter jsonl-explorer-app exec playwright install --with-deps chromium webkit
+
+      - name: Run E2E (Chromium full + WebKit smoke + 100 MiB perf budgets)
+        # E2E_INCLUDE_PERF adds the 100 MiB streaming budget suite
+        # (index/filter/DOM-bounds/heap/cancellation/export) — scheduled
+        # only, so PR runs stay fast. Budgets are provisional (TSK0053):
+        # docs/perf-baselines.md tracks the measured numbers.
+        env:
+          E2E_INCLUDE_WEBKIT: '1'
+          E2E_INCLUDE_PERF: '1'
+        run: pnpm test:e2e
+
+      - name: Multi-GB soak (2 GiB stream, artifacts)
+        # Streams 2 GiB from the fixture server into the built app,
+        # exercises filter/DOM/export/cancellation at scale, writes a
+        # JSON artifact, cleans OPFS. Exits non-zero on invariant failure.
+        run: pnpm --filter jsonl-explorer-app perf:soak
+
+      - name: Upload perf artifacts (soak metrics)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-soak-artifacts-scheduled
+          path: packages/app/artifacts/
+          retention-days: 30
+
+      - name: Upload E2E artifacts (traces/screenshots)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-scheduled
+          path: packages/app/test-results/
+          retention-days: 14

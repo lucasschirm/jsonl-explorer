@@ -101,6 +101,12 @@ dist
 # vitepress build output
 **/.vitepress/dist
 
+# playwright test artifacts (e2e)
+test-results/
+
+# perf soak artifacts (TSK0053 — generated metrics, never committed)
+artifacts/
+
 # vitepress cache directory
 **/.vitepress/cache
 
@@ -143,3 +149,5 @@ vite.config.ts.timestamp-*
 .vite/
 
 tmp/
+# CLI staged site (generated from the app build; packed into the tarball)
+/packages/cli/site/

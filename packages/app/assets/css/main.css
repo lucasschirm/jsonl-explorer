@@ -1,0 +1,193 @@
+@import "tailwindcss";
+@plugin "daisyui";
+
+@plugin "daisyui" {
+  themes: light, dark;
+}
+
+@theme {
+  --color-primary: #3b82f6;
+  --color-primary-content: #ffffff;
+  --color-secondary: #64748b;
+  --color-secondary-content: #ffffff;
+  --color-accent: #06b6d4;
+  --color-accent-content: #ffffff;
+  --color-neutral: #1e293b;
+  --color-neutral-content: #ffffff;
+  --color-base-100: #ffffff;
+  --color-base-200: #f1f5f9;
+  --color-base-300: #e2e8f0;
+  /* daisyUI 5 (Tailwind v4) requires the full base scale */
+  --color-base-400: #94a3b8;
+  --color-base-500: #64748b;
+  --color-base-content: #0f172a;
+  --color-info: #06b6d4;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+}
+
+@layer base {
+  html {
+    @apply scroll-smooth;
+  }
+
+  /* Long inline-code tokens (URLs, capability strings) must not push the
+     page wider than the viewport on narrow screens: wrap them in place.
+     Block-level <pre> code keeps its own horizontal scroll (TSK0048). */
+  :not(pre) > code {
+    overflow-wrap: anywhere;
+  }
+
+
+  body {
+    @apply bg-base-100 text-base-content min-h-screen;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  * {
+    @apply border-base-300;
+  }
+
+  ::selection {
+    @apply bg-primary/30;
+  }
+
+  /* TSK0052: respect the user's reduced-motion preference app-wide —
+     kill animations/transitions (pulse, spin, toasts, modal fades). */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* TSK0052: JSON syntax-token colors, chosen per theme to meet WCAG AA
+   (>=4.5:1) on the theme's base-100/base-200. The stock daisyUI accent
+   colors (success/warning/info/primary) do not. Light values are the
+   defaults; [data-theme="dark"] overrides them (daisyUI's dark base-*
+   beat these at :root). */
+:root {
+  --token-key: #1d4ed8;
+  --token-string: #166534;
+  --token-number: #92400e;
+  --token-boolean: #7e22ce;
+  --token-muted: #475569;
+  --token-link: #1d4ed8;
+}
+[data-theme='dark'] {
+  --token-key: #93c5fd;
+  --token-string: #86efac;
+  --token-number: #fcd34d;
+  --token-boolean: #d8b4fe;
+  --token-muted: #94a3b8;
+  --token-link: #93c5fd;
+}
+
+@layer components {
+  .btn-ghost-sm {
+    @apply btn btn-ghost btn-sm;
+  }
+
+  /* daisyUI 5 (Tailwind v4): inputs/selects are bordered by default —
+     the v3 `-bordered` variants no longer exist. */
+  .input-search {
+    @apply input w-full max-w-xs;
+  }
+
+  .select-theme {
+    @apply select;
+  }
+
+  .badge-status {
+    @apply badge badge-outline gap-1;
+  }
+
+  .toast-enter-active,
+  .toast-leave-active {
+    transition: all 0.3s ease;
+  }
+
+  .toast-enter-from,
+  .toast-leave-to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.base-300') transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: theme('colors.base-300');
+    border-radius: 3px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: theme('colors.base-400');
+  }
+
+  .text-mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  .text-token-key {
+    color: var(--token-key);
+  }
+
+  .text-token-string {
+    color: var(--token-string);
+  }
+
+  .text-token-number {
+    color: var(--token-number);
+  }
+
+  .text-token-boolean {
+    color: var(--token-boolean);
+  }
+
+  .text-token-muted {
+    color: var(--token-muted);
+  }
+
+  /* Prose links: --color-primary (#3b82f6) fails AA on the dark base —
+     use a per-theme link token (TSK0052). */
+  .link-token {
+    color: var(--token-link);
+  }
+
+  /* The 'edited' badge: badge-warning (amber-500) fails AA on light.
+     token-number (burnt amber / amber-300) passes on both themes. */
+  .badge-edited {
+    color: var(--token-number);
+    border-color: var(--token-number);
+    background-color: transparent;
+  }
+
+  .truncate-multiline {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
