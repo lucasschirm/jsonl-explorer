@@ -95,10 +95,13 @@ const showLargeRaw = computed(
   () => detailStore.status === 'ready' && detailStore.needsConfirm,
 )
 
-// NOTE (TSK0031+): when the copy/export controls land, Format/Compact will
-// decide how the parsed document is serialized for them (pretty 2-space
-// vs minified). Until then the mode is the toolbar's active state + the
-// panel's data-mode attribute — always presentation-only, never an edit.
+const compactJson = computed(() => {
+  const parsed = detailStore.parsed
+  if (parsed !== null && parsed.ok) {
+    return serializeCompact(parsed.value)
+  }
+  return ''
+})
 
 function confirmTree(): void {
   detailStore.confirmTreeView()
@@ -204,14 +207,19 @@ function confirmTree(): void {
       <DetailSearch v-if="showTree" class="sticky top-0 z-10" />
 
       <div class="p-4">
-      <!-- Valid JSON: the collapsible tree (+ local-search highlights) -->
+      <!-- Valid JSON: collapsible tree (format mode) or minified (compact mode) -->
       <JsonTree
-        v-if="showTree"
+        v-if="showTree && detailStore.viewMode === 'format'"
         :value="detailStore.parsed!.value!"
         :match-keys="searchStore.matchKeys"
         :current-key="searchStore.currentKey"
         :expand-keys="searchStore.expandKeys"
       />
+      <pre
+        v-else-if="showTree && detailStore.viewMode === 'compact'"
+        class="whitespace-pre-wrap break-all font-mono text-sm bg-base-200 rounded p-3"
+        data-testid="detail-compact"
+      >{{ compactJson }}</pre>
 
       <!-- Invalid JSON: read mode (banner + raw text + Edit) or the
            explicit raw editor (Save/Cancel; no implicit commits). -->

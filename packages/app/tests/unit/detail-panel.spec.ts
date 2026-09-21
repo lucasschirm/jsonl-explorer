@@ -157,11 +157,19 @@ describe('DetailPanel (TSK0024)', () => {
 
     const panel = wrapper.find('[data-testid="detail-panel"]')
     expect(panel.attributes('data-mode')).toBe('format')
+    expect(wrapper.find('[data-testid="json-tree"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-compact"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="detail-compact-btn"]').trigger('click')
     expect(wrapper.find('[data-testid="detail-panel"]').attributes('data-mode')).toBe('compact')
+    expect(wrapper.find('[data-testid="detail-compact"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-compact"]').text()).toBe('{"a":1}')
+    expect(wrapper.find('[data-testid="json-tree"]').exists()).toBe(false)
+
     await wrapper.find('[data-testid="detail-format-btn"]').trigger('click')
     expect(wrapper.find('[data-testid="detail-panel"]').attributes('data-mode')).toBe('format')
+    expect(wrapper.find('[data-testid="json-tree"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-compact"]').exists()).toBe(false)
 
     // The worker never received an edit (the row text is untouched).
     const types = worker.posted.map((m) => (m as PostedOp).type)
