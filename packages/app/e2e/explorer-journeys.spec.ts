@@ -54,6 +54,17 @@ test.describe('explorer journeys (TSK0046)', () => {
     await page.locator('[data-testid="row-item"]').nth(2).click()
     await expect(page.locator('[data-testid="row-item"]').nth(2)).toHaveClass(/bg-primary/)
     await expect(page.locator('[data-testid="detail-panel"]')).toContainText('charlie')
+
+    // Compact button toggles to compact minified presentation; Format toggles back.
+    await expect(page.locator('[data-testid="json-tree"]')).toBeVisible()
+    await expect(page.locator('[data-testid="detail-compact"]')).toHaveCount(0)
+    await page.locator('[data-testid="detail-compact-btn"]').click()
+    await expect(page.locator('[data-testid="detail-compact"]')).toBeVisible()
+    await expect(page.locator('[data-testid="detail-compact"]')).toContainText('charlie')
+    await expect(page.locator('[data-testid="json-tree"]')).toHaveCount(0)
+    await page.locator('[data-testid="detail-format-btn"]').click()
+    await expect(page.locator('[data-testid="json-tree"]')).toBeVisible()
+    await expect(page.locator('[data-testid="detail-compact"]')).toHaveCount(0)
   })
 
   test('virtualized rows stay bounded while deep-scrolling a 20k-row file', async ({ page }) => {
